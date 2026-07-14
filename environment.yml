@@ -1,0 +1,14 @@
+name: mri-project
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - scikit-image
+  - jupyter
