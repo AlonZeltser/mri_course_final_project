@@ -23,3 +23,4 @@ def prepare_environment(hpc:bool):
     data_path = os.path.abspath(data_path)
     print(f'Data path: {data_path}')
     os.chdir(data_path)
+

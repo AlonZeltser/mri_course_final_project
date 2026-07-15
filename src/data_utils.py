@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 
+
 def csv_path_to_local_path(csv_path: str) -> Path:
     return os.path.join("selected_npy", os.path.basename(csv_path))
 
