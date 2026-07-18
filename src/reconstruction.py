@@ -7,14 +7,14 @@ def k_space_interpolation(
     method: str = 'linear_1d',
     tolerance: float = 1e-5,
 ) -> tuple[np.ndarray, np.ndarray]:
-    supported_methods = {'linear_1d', 'bilinear', 'bicubic', 'inner_neighbor'}
+    supported_methods = {'linear_1d', 'bilinear', 'bicubic', 'nearest_row'}
     if k_space.ndim != 2:
         raise ValueError('k_space must be 2D')
     if tolerance < 0:
         raise ValueError('tolerance must be non-negative')
     if method not in supported_methods:
         raise ValueError(
-            "method must be one of: 'linear_1d', 'inner_neighbor', "
+            "method must be one of: 'linear_1d', 'nearest_row', "
             "'bilinear', 'bicubic'"
         )
 
@@ -41,17 +41,13 @@ def k_space_interpolation(
             return np.full(zero_lines_indices.shape, known_values[0], dtype=values.dtype)
         return np.interp(zero_lines_indices, known_rows, known_values)
 
-    if method == 'inner_neighbor':
+    if method == 'nearest_row':
         center_row = (k_space.shape[0] - 1) / 2
         for missing_row in zero_lines_indices:
-            if missing_row < center_row:
-                candidates = known_rows[known_rows > missing_row]
-                source_row = candidates[0] if candidates.size else known_rows[-1]
-            elif missing_row > center_row:
-                candidates = known_rows[known_rows < missing_row]
-                source_row = candidates[-1] if candidates.size else known_rows[0]
-            else:
-                source_row = known_rows[np.argmin(np.abs(known_rows - missing_row))]
+            distances = np.abs(known_rows - missing_row)
+            closest_rows = known_rows[distances == distances.min()]
+            inward_distances = np.abs(closest_rows - center_row)
+            source_row = closest_rows[np.argmin(inward_distances)]
 
             corrected_k_space[missing_row, :] = k_space[source_row, :]
 
@@ -118,10 +114,16 @@ def interpolation_reconstruction(
     if harmed_k_space.ndim != 2:
         raise ValueError('harmed_k_space must be 2D')
 
+    if method == 'zero_filling':
+        return kspace_to_image(harmed_k_space), harmed_k_space
+
     corrected_k_space, _ = k_space_interpolation(
         harmed_k_space,
         method=method,
         tolerance=tolerance,
     )
+    lines_are_equal, number_of_non_zero_lines = verify_non_zero_lines(corrected_k_space, harmed_k_space)
+    if not lines_are_equal:
+        raise ValueError(f"Non-zero lines verification failed. Number of non-zero lines: {number_of_non_zero_lines}")
     reconstructed_image = kspace_to_image(corrected_k_space)
     return reconstructed_image, corrected_k_space

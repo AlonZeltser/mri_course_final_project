@@ -72,39 +72,7 @@ def zero_k_space_rows_random_dist(
     seed: int | None = None,
     sigma_fraction: float = 1 / 6,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Randomly zero n rows of an already shifted 2D k-space array.
 
-    Rows far from the center are more likely to be zeroed, so the central
-    low-frequency rows are preferentially preserved.
-
-    Parameters
-    ----------
-    k_space : np.ndarray
-        Complex-valued 2D shifted k-space array. The zero-frequency
-        component is assumed to be at the center of the array.
-
-    n : int
-        Number of rows to zero.
-
-    seed : int or None, optional
-        Random seed for reproducibility.
-
-    sigma_fraction : float, optional
-        Controls the width of the Gaussian preservation profile.
-        sigma = number_of_rows * sigma_fraction.
-
-        Smaller values preserve the central region more strongly.
-        Default is 1/6.
-
-    Returns
-    -------
-    zeroed_k_space : np.ndarray
-        A copy of the input k-space with n selected rows set to zero.
-
-    zeroed_rows : np.ndarray
-        Indices of the rows that were zeroed.
-    """
     if not isinstance(k_space, np.ndarray):
         raise TypeError("k_space must be a NumPy array.")
 
@@ -183,3 +151,30 @@ def create_missing_central_slice_from_volume(volume: np.ndarray, axis: int, k_sp
         'missing_central': missing_central,
         'max_error': max_error,
     }
+
+def verify_non_zero_lines(
+    complex_image1: np.ndarray,
+    complex_image2: np.ndarray,
+) -> tuple[bool, int]:
+    """Verify that retained rows in ``complex_image2`` match ``complex_image1``.
+
+    A zero row has zero real and imaginary values in every column. Such rows in
+    ``complex_image2`` are ignored; every other row must be exactly equal to
+    its corresponding row in ``complex_image1``.
+    """
+    if not isinstance(complex_image1, np.ndarray) or not isinstance(complex_image2, np.ndarray):
+        raise TypeError("Both complex images must be NumPy arrays.")
+    if complex_image1.ndim != 2 or complex_image2.ndim != 2:
+        raise ValueError("Both complex images must be 2D arrays.")
+    if complex_image1.shape != complex_image2.shape:
+        raise ValueError("Both complex images must have the same shape.")
+    if not np.iscomplexobj(complex_image1) or not np.iscomplexobj(complex_image2):
+        raise ValueError("Both complex images must be complex-valued.")
+
+    non_zero_lines = ~np.all(complex_image2 == 0, axis=1)
+    number_of_non_zero_lines = int(np.count_nonzero(non_zero_lines))
+    lines_are_equal = np.array_equal(
+        complex_image1[non_zero_lines],
+        complex_image2[non_zero_lines],
+    )
+    return lines_are_equal, number_of_non_zero_lines
