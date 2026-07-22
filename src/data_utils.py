@@ -16,7 +16,6 @@ def load_metadata(csv_path: str | Path) -> pd.DataFrame:
 
 def load_volume(volume_path: str | Path) -> np.ndarray | None:
     volume_path = Path(volume_path)
-
     # allow partial data set for local runs
     if not volume_path.exists():
         return None

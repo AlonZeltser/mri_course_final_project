@@ -1,0 +1,66 @@
+from __future__ import annotations
+from pathlib import Path
+from typing import Sequence
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+
+
+class MRIUndersampledDataset(Dataset):
+    def __init__(self, split_root: str | Path, csv_name: str = 'samples.csv',
+                 planes: Sequence[str] | None = None,
+                 retain_ratios: Sequence[float] | None = None,
+                 load_mask: bool = False) -> None:
+        self.split_root = Path(split_root)
+        csv_path = self.split_root / csv_name
+        if not csv_path.exists():
+            raise FileNotFoundError(f'CSV file not found: {csv_path}')
+        self.samples = pd.read_csv(csv_path)
+        required = {'sample_id','plane','retain_ratio','original_image_file',
+                    'undersampled_image_file','mask_file'}
+        missing = required - set(self.samples.columns)
+        if missing:
+            raise ValueError(f'CSV is missing required columns: {sorted(missing)}')
+        if planes is not None:
+            self.samples = self.samples[self.samples['plane'].isin(list(planes))]
+        if retain_ratios is not None:
+            values = np.asarray(retain_ratios, dtype=float)
+            keep = self.samples['retain_ratio'].apply(
+                lambda x: np.any(np.isclose(float(x), values, atol=1e-8)))
+            self.samples = self.samples[keep]
+        self.samples = self.samples.reset_index(drop=True)
+        self.load_mask = load_mask
+        if len(self.samples) == 0:
+            raise ValueError('No samples remain after applying dataset filters.')
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _load_array(self, relative_path: str) -> np.ndarray:
+        path = self.split_root / relative_path
+        if not path.exists():
+            raise FileNotFoundError(f'Dataset file not found: {path}')
+        return np.load(path, allow_pickle=False)
+
+    def __getitem__(self, index: int) -> dict[str, object]:
+        row = self.samples.iloc[index]
+        x = self._load_array(str(row['undersampled_image_file'])).astype(np.float32, copy=False)
+        y = self._load_array(str(row['original_image_file'])).astype(np.float32, copy=False)
+        if x.ndim != 2 or y.ndim != 2:
+            raise ValueError(f'Expected 2D images, received input={x.shape}, target={y.shape}')
+        if x.shape != y.shape:
+            raise ValueError(f"Shape mismatch for {row['sample_id']}: {x.shape} vs {y.shape}")
+        sample: dict[str, object] = {
+            'input': torch.from_numpy(np.ascontiguousarray(x[None, ...])),
+            'target': torch.from_numpy(np.ascontiguousarray(y[None, ...])),
+            'sample_id': str(row['sample_id']),
+            'plane': str(row['plane']),
+            'retain_ratio': torch.tensor(float(row['retain_ratio']), dtype=torch.float32),
+        }
+        if self.load_mask:
+            mask = self._load_array(str(row['mask_file'])).astype(np.float32, copy=False)
+            if mask.ndim != 1:
+                raise ValueError(f'Expected 1D row mask, received {mask.shape}')
+            sample['mask'] = torch.from_numpy(np.ascontiguousarray(mask))
+        return sample

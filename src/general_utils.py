@@ -11,6 +11,7 @@ brain_planes = {
     'Coronal':1,
     'Axial':2
 }
+dl_splits= ("train", "test", "val")
 
 def prepare_environment(hpc:bool):
 
