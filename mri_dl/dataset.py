@@ -8,7 +8,8 @@ from torch.utils.data import Dataset
 
 
 class MRIUndersampledDataset(Dataset):
-    def __init__(self, split_root: str | Path, csv_name: str = 'samples.csv',
+    def __init__(self, split_root: str | Path,
+                 csv_name: str = 'samples.csv',
                  planes: Sequence[str] | None = None,
                  retain_ratios: Sequence[float] | None = None,
                  load_mask: bool = False) -> None:
@@ -54,6 +55,9 @@ class MRIUndersampledDataset(Dataset):
         sample: dict[str, object] = {
             'input': torch.from_numpy(np.ascontiguousarray(x[None, ...])),
             'target': torch.from_numpy(np.ascontiguousarray(y[None, ...])),
+            # The persisted dataset remains input/original image pairs.  The
+            # residual target is derived here so training learns y - x.
+            'delta_target': torch.from_numpy(np.ascontiguousarray((y - x)[None, ...])),
             'sample_id': str(row['sample_id']),
             'plane': str(row['plane']),
             'retain_ratio': torch.tensor(float(row['retain_ratio']), dtype=torch.float32),

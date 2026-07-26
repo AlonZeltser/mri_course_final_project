@@ -16,36 +16,44 @@ def load_metadata(csv_path: str | Path) -> pd.DataFrame:
 
 def load_volume(volume_path: str | Path) -> np.ndarray | None:
     volume_path = Path(volume_path)
-    # allow partial data set for local runs
     if not volume_path.exists():
         return None
-    volume = np.load(volume_path)
+    try:
+        volume = np.load(volume_path)
+    except (EOFError, OSError, ValueError):
+        return None
     if volume.ndim != 3:
-        raise ValueError(
-            f"Expected a 3D MRI volume, received shape {volume.shape}"
-        )
+        return None
     return volume
 
 
-def select_central_slice(
+def extract_slice(
     volume: np.ndarray,
-    axis: int
+    axis: int,
+    slice_index: int | None = None,
+    central: bool = False,
 ) -> tuple[int, np.ndarray]:
     if volume.ndim != 3:
         raise ValueError("Expected a 3D volume")
     if 0 > axis > 3:
         raise ValueError("Axis must be 0, 1, or 2")
-    index = volume.shape[axis] // 2
+    if central:
+        index = volume.shape[axis] // 2
+    elif slice_index is not None:
+        index = slice_index
+    else:
+        raise ValueError("Either central must be True or slice_index must be provided")
+
     slice_image = None
     if axis == 0:
-        slice_image = np.rot90(volume[index, :, :])
+        slice_image = volume[index, :, :]
     elif axis == 1:
-        slice_image = np.rot90(volume[:, index, :])
+        slice_image = volume[:, index, :]
     elif axis == 2:
-        slice_image = np.rot90(volume[:, :, index])
+        slice_image = volume[:, :, index]
     else:
-        assert False
-    return index, slice_image
+        raise AssertionError(f"Unexpected axis: {axis}")
+    return index, np.rot90(slice_image)
 
 
 def min_max_normalize(

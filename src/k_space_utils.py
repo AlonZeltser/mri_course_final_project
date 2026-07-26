@@ -1,5 +1,5 @@
 import numpy as np
-from src.data_utils import select_central_slice, min_max_normalize
+from src.data_utils import extract_slice, min_max_normalize
 
 
 def image_to_kspace(image: np.ndarray) -> np.ndarray:
@@ -14,6 +14,69 @@ def kspace_to_image(kspace: np.ndarray) -> np.ndarray:
         raise ValueError("Expected a 2D k-space array")
 
     return np.abs(np.fft.ifft2(np.fft.ifftshift(kspace)))
+
+
+def infer_zero_line_mask(
+    acquired_k_space: np.ndarray,
+    atol: float = 0.0,
+) -> np.ndarray:
+    """Return a row mask where True means the row was zeroed in acquisition."""
+    if acquired_k_space.ndim != 2:
+        raise ValueError("Expected a 2D k-space array")
+    if atol < 0:
+        raise ValueError("atol must be non-negative")
+    return np.all(np.abs(acquired_k_space) <= atol, axis=1)
+
+
+def merge_kspace_with_data_consistency(
+    acquired_k_space: np.ndarray,
+    cnn_k_space: np.ndarray,
+    zero_line_mask: np.ndarray | None = None,
+    atol: float = 0.0,
+) -> np.ndarray:
+    """Merge k-space by keeping measured rows and replacing only zeroed rows."""
+    if acquired_k_space.ndim != 2 or cnn_k_space.ndim != 2:
+        raise ValueError("Both k-space inputs must be 2D arrays")
+    if acquired_k_space.shape != cnn_k_space.shape:
+        raise ValueError(
+            f"Shape mismatch: acquired={acquired_k_space.shape}, cnn={cnn_k_space.shape}"
+        )
+    if zero_line_mask is None:
+        zero_line_mask = infer_zero_line_mask(acquired_k_space, atol=atol)
+    if zero_line_mask.ndim != 1 or zero_line_mask.shape[0] != acquired_k_space.shape[0]:
+        raise ValueError("zero_line_mask must be a 1D array with one value per k-space row")
+
+    merged = acquired_k_space.copy()
+    merged[zero_line_mask, :] = cnn_k_space[zero_line_mask, :]
+    return merged
+
+
+def enforce_kspace_data_consistency(
+    reconstructed_image: np.ndarray,
+    acquired_k_space: np.ndarray,
+    zero_line_mask: np.ndarray | None = None,
+    atol: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply FFT-based data consistency and return final image + debug k-spaces."""
+    if reconstructed_image.ndim != 2:
+        raise ValueError("Expected reconstructed_image to be 2D")
+    if acquired_k_space.ndim != 2:
+        raise ValueError("Expected acquired_k_space to be 2D")
+    if reconstructed_image.shape != acquired_k_space.shape:
+        raise ValueError(
+            f"Shape mismatch: reconstructed_image={reconstructed_image.shape}, "
+            f"acquired_k_space={acquired_k_space.shape}"
+        )
+
+    cnn_k_space = image_to_kspace(reconstructed_image)
+    merged_k_space = merge_kspace_with_data_consistency(
+        acquired_k_space=acquired_k_space,
+        cnn_k_space=cnn_k_space,
+        zero_line_mask=zero_line_mask,
+        atol=atol,
+    )
+    final_image = kspace_to_image(merged_k_space)
+    return final_image, cnn_k_space, merged_k_space
 
 
 def kspace_log_magnitude(
@@ -131,7 +194,7 @@ def zero_k_space_rows_random_dist(
     return zeroed_k_space # np.sort(zeroed_rows)
 
 def create_missing_central_slice_from_volume(volume: np.ndarray, axis: int, k_space_op=None, **k_space_op_kwargs) -> dict:
-    slice_index, original_slice = select_central_slice(volume, axis)
+    slice_index, original_slice = extract_slice(volume, axis, central=True)
     normalized_slice = min_max_normalize(original_slice)
     k_space = image_to_kspace(normalized_slice)
     original_k_space = k_space.copy()

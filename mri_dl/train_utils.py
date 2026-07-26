@@ -45,11 +45,11 @@ def run_epoch(model: nn.Module, loader: DataLoader, criterion: nn.Module,
     with context:
         for batch in loader:
             x = batch['input'].to(device, non_blocking=True)
-            y = batch['target'].to(device, non_blocking=True)
+            delta_target = batch['delta_target'].to(device, non_blocking=True)
             if training:
                 optimizer.zero_grad(set_to_none=True)
-            pred = model(x)
-            loss = criterion(pred, y)
+            predicted_delta = model(x)
+            loss = criterion(predicted_delta, delta_target)
             if training:
                 loss.backward(); optimizer.step()
             total += float(loss.item()) * x.shape[0]

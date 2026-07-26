@@ -1,42 +1,42 @@
 from __future__ import annotations
 
-import argparse
 import json
-import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 from typing import Mapping, Sequence
-from pprint import pprint
 
 import numpy as np
 import pandas as pd
 
-from src.general_utils import csvs
 from src.data_utils import (
     csv_path_to_local_path,
+    extract_slice,
     load_metadata,
     load_volume,
     min_max_normalize,
 )
-from src.general_utils import brain_planes
+from src.general_utils import BRAIN_PLANES, DL_SPLITS, SCV_FILES
 from src.k_space_utils import image_to_kspace, kspace_to_image
 
-DEFAULT_RETAIN_RATIOS = (0.20, 0.30, 0.50)
+VALID_METADATA_FILE_NAME = "valid_metadata.csv"
+SPLIT_VOLUME_ASSIGNMENT = "split_volume_assignment.csv"
 
 @dataclass(frozen=True)
-class DatasetCreationConfig:
-    """Configuration for one train/validation/test dataset split."""
-
-    split_name: str
-    source_dataset_root: Path
-    source_csv_name: str
-    output_dataset_root: Path
+class SplitMultiplicityConfig:
     number_of_volumes: int
-    slices_per_volume_per_plane: int | Mapping[str, int]
-    slice_percentile_range: tuple[float, float]
+    slices_per_volume_per_plane: int
     undersampling_per_slice: int
 
+@dataclass(frozen=True)
+class DatasetCreationPlan:
+    """Single-call plan that generates train/val/test from one valid pool."""
+    source_dataset_root: Path
+    source_csv_names: Mapping[str, str]
+    output_dataset_root: Path
+    split_multiplicity: Mapping[str, SplitMultiplicityConfig]
+
+    slice_percentile_range: tuple[float, float]
     planes: tuple[str, ...]
     retain_ratios: tuple[float, ...]
     first_seed: int
@@ -46,86 +46,60 @@ class DatasetCreationConfig:
     output_dtype: str = "float32"
     overwrite: bool = False
 
-def create_config(split_name: str,
-                  number_of_volumes:int,
-                  slices_per_volume_per_plane: int,
-                  slice_percentile_range: tuple[float, float],
-                  undersampling_per_slice:int,
-                  first_seed: int,
-                  sigma_fraction: float,
-                  output_dataset_root:str) -> DatasetCreationConfig:
-    return DatasetCreationConfig(
-    split_name=split_name,
-    source_dataset_root=Path("."),
-    source_csv_name=csvs[split_name],
-    output_dataset_root=Path(output_dataset_root),
-    number_of_volumes=number_of_volumes,
-    slices_per_volume_per_plane=slices_per_volume_per_plane,
-    slice_percentile_range=slice_percentile_range,
-    undersampling_per_slice=undersampling_per_slice,
-    planes=tuple(brain_planes.keys()),
-    retain_ratios=DEFAULT_RETAIN_RATIOS,
-    first_seed=first_seed,
-    sigma_fraction=sigma_fraction
-)
 
-def validate_config(config: DatasetCreationConfig) -> None:
-    if config.split_name not in {"train", "val", "test"}:
-        raise ValueError("split_name must be 'train', 'val', or 'test'.")
+def validate_creation_plan(plan: DatasetCreationPlan) -> None:
+    if not plan.output_dataset_root:
+        raise ValueError("output_dataset_root must be set.")
 
-    if config.number_of_volumes <= 0:
-        raise ValueError("number_of_volumes must be positive.")
-
-    if config.undersampling_per_slice <= 0:
-        raise ValueError("undersampling_per_slice must be positive.")
-
-    low, high = config.slice_percentile_range
+    low, high = plan.slice_percentile_range
     if not (0.0 <= low < high <= 100.0):
         raise ValueError(
             "slice_percentile_range must satisfy 0 <= low < high <= 100."
         )
 
-    if config.sigma_fraction <= 0:
+    if plan.sigma_fraction <= 0:
         raise ValueError("sigma_fraction must be positive.")
 
-    unknown_planes = set(config.planes) - set(brain_planes)
+    unknown_planes = set(plan.planes) - set(BRAIN_PLANES)
     if unknown_planes:
         raise ValueError(
             f"Unknown planes: {sorted(unknown_planes)}. "
-            f"Supported planes: {sorted(brain_planes)}."
+            f"Supported planes: {sorted(BRAIN_PLANES)}."
         )
 
-    for ratio in config.retain_ratios:
+    for ratio in plan.retain_ratios:
         if not (0.0 < ratio <= 1.0):
             raise ValueError(
                 f"Each retain ratio must be in (0, 1], received {ratio}."
             )
 
-    if isinstance(config.slices_per_volume_per_plane, Mapping):
-        missing = set(config.planes) - set(config.slices_per_volume_per_plane)
-        if missing:
+    missing_split_configs = set(DL_SPLITS) - set(plan.split_multiplicity)
+    if missing_split_configs:
+        raise ValueError(
+            "split_multiplicity is missing: "
+            f"{sorted(missing_split_configs)}"
+        )
+
+    missing_csv_names = set(SCV_FILES) - set(plan.source_csv_names)
+    if missing_csv_names:
+        raise ValueError(
+            "source_csv_names is missing: "
+            f"{sorted(missing_csv_names)}"
+        )
+
+    for split_name in DL_SPLITS:
+        split_config = plan.split_multiplicity[split_name]
+        if split_config.number_of_volumes <= 0:
             raise ValueError(
-                "Missing slice count for planes: "
-                f"{sorted(missing)}."
+                f"number_of_volumes for '{split_name}' must be positive."
             )
-        counts = [
-            config.slices_per_volume_per_plane[plane]
-            for plane in config.planes
-        ]
-    else:
-        counts = [config.slices_per_volume_per_plane]
+        if split_config.undersampling_per_slice <= 0:
+            raise ValueError(
+                f"undersampling_per_slice for '{split_name}' must be positive."
+            )
 
-    if any(count <= 0 for count in counts):
-        raise ValueError("All slice counts must be positive.")
-
-def get_slice_count(
-    slices_per_volume_per_plane: int | Mapping[str, int],
-    plane: str,
-) -> int:
-    if isinstance(slices_per_volume_per_plane, Mapping):
-        return int(slices_per_volume_per_plane[plane])
-    return int(slices_per_volume_per_plane)
-
+        if split_config.slices_per_volume_per_plane <= 0:
+            raise ValueError(f"slices per volume per plane must be positive")
 
 def candidate_slice_indices(
     axis_length: int,
@@ -148,32 +122,6 @@ def candidate_slice_indices(
     high_exclusive = max(low + 1, min(high_exclusive, axis_length))
 
     return np.arange(low, high_exclusive, dtype=int)
-
-
-def extract_slice(
-    volume: np.ndarray,
-    plane: str,
-    slice_index: int,
-) -> np.ndarray:
-    """Extract a 2D slice using the orientation convention in data_utils.py."""
-    axis = brain_planes[plane]
-
-    if slice_index < 0 or slice_index >= volume.shape[axis]:
-        raise IndexError(
-            f"Slice index {slice_index} is invalid for plane {plane} "
-            f"with axis length {volume.shape[axis]}."
-        )
-
-    if axis == 0:
-        image = volume[slice_index, :, :]
-    elif axis == 1:
-        image = volume[:, slice_index, :]
-    elif axis == 2:
-        image = volume[:, :, slice_index]
-    else:
-        raise AssertionError(f"Unexpected axis: {axis}")
-
-    return np.rot90(image)
 
 
 def create_unique_row_mask(
@@ -265,14 +213,19 @@ def prepare_output_directories(
     retain_ratios: Sequence[float]
 ) -> None:
     print("preparing output directories...")
+    # clear previous
     if split_root.exists():
         print(f"{split_root} already exists. Removing...")
-        shutil.rmtree(split_root)
+        try:
+            shutil.rmtree(split_root)
+        except Exception as e:
+            print("Failed to delete existing output directories.")
+            raise
         print(f"{split_root} removed")
         assert not split_root.exists()
 
     print("creating output directories...")
-    split_root.mkdir(parents=True, exist_ok=True)
+    split_root.mkdir(parents=False, exist_ok=False)
     print(f"{split_root} created")
 
     originals = (split_root / "originals")
@@ -282,6 +235,9 @@ def prepare_output_directories(
     us = (split_root / "undersampled")
     us.mkdir(parents=False, exist_ok=False)
     print(f"{us} created")
+    k_spaces = (split_root / "k_spaces")
+    k_spaces.mkdir(parents=False, exist_ok=False)
+    print(f"{k_spaces} created")
     masks = (split_root / "masks")
     masks.mkdir(parents=False, exist_ok=False)
     print(f"{masks} created")
@@ -293,140 +249,154 @@ def prepare_output_directories(
         us_ratio.mkdir(parents=False, exist_ok=False)
         print(f"{us_ratio} created")
 
+        k_spaces_ratio = (k_spaces / ratio_folder)
+        k_spaces_ratio.mkdir(parents=False, exist_ok=False)
+        print(f"{k_spaces_ratio} created")
+
         masks_ratio = (masks / ratio_folder)
         masks_ratio.mkdir(parents=False, exist_ok=False)
         print(f"{masks_ratio} created")
 
 
-def choose_existing_volumes(
-    metadata: pd.DataFrame,
-    config: DatasetCreationConfig,
-    rng: np.random.Generator,
-) -> list[tuple[int, pd.Series, Path]]:
-    if config.path_column not in metadata.columns:
-        raise KeyError(
-            f"CSV does not contain path column '{config.path_column}'. "
-            f"Available columns: {list(metadata.columns)}"
-        )
 
-    row_order = rng.permutation(len(metadata))
-    selected: list[tuple[int, pd.Series, Path]] = []
+def collect_valid_metadata_pool(plan: DatasetCreationPlan) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
     seen_paths: set[Path] = set()
-    skipped_missing = 0
-    skipped_invalid = 0
-    for positional_index in row_order:
-        row = metadata.iloc[int(positional_index)]
-        resolved_path = csv_path_to_local_path(str(row[config.path_column]))
-        if resolved_path is None:
-            skipped_missing += 1
-            print("None")
-            continue
-        if resolved_path in seen_paths:
-            print("in seen, skipped")
-            continue
-        abs_path = os.path.abspath(resolved_path)
-        print(f"examining {abs_path}")
-        try:
-            print("loading volume...")
-            volume = load_volume(abs_path)
-            print("loaded")
-        except (OSError, ValueError):
-            skipped_invalid += 1
-            continue
+    repeating_paths = 0
+    skipped_not_found = 0
+    skipped_unreadable = 0
 
-        if volume is None:
-            print("value is None")
-            skipped_missing += 1
-            continue
+    for source_split in DL_SPLITS:
+        if source_split in plan.source_csv_names.keys():
+            source_csv_path = (
+                plan.source_dataset_root / plan.source_csv_names[source_split]
+            )
+            print(f"collecting metadata for {source_split}")
+            metadata = load_metadata(source_csv_path)
+            if plan.path_column not in metadata.columns:
+                raise KeyError(
+                    f"CSV {source_csv_path} does not contain path column "
+                    f"'{plan.path_column}'."
+                )
 
-        seen_paths.add(resolved_path)
-        selected.append(
-            (int(positional_index), row.copy(), abs_path)
-        )
+            for csv_row_index, row in metadata.iterrows():
+                resolved_volume_path = Path(csv_path_to_local_path(row[plan.path_column]))
+                if not resolved_volume_path.is_absolute():
+                    resolved_volume_path = plan.source_dataset_root / resolved_volume_path
+                resolved_volume_path = resolved_volume_path.resolve()
+                if resolved_volume_path in seen_paths:
+                    repeating_paths += 1
+                    continue
 
-        if len(selected) == config.number_of_volumes:
-            print(f"found {len(selected)} volumes")
-            break
+                if not resolved_volume_path.exists():
+                    skipped_not_found += 1
+                    continue
 
-    if len(selected) < config.number_of_volumes:
+                volume = load_volume(resolved_volume_path)
+                if volume is None:
+                    skipped_unreadable += 1
+                    continue
+
+                seen_paths.add(resolved_volume_path)
+                record = row.to_dict()
+                record["source_metadata_split"] = source_split
+                record["source_metadata_row"] = int(str(csv_row_index))
+                record["resolved_volume_path"] = str(resolved_volume_path)
+                records.append(record)
+
+    if not records:
         raise RuntimeError(
-            f"Requested {config.number_of_volumes} existing volumes, "
-            f"but found only {len(selected)} after checking "
-            f"{len(metadata)} CSV rows. Missing: {skipped_missing}; "
-            f"invalid: {skipped_invalid}."
+            "Could not find any existing volume files from the provided metadata CSVs."
         )
+
+    valid_pool = pd.DataFrame.from_records(records)
+    if len(valid_pool) > len(seen_paths):
+        valid_pool = valid_pool.drop_duplicates(
+            subset=["resolved_volume_path"]
+        ).reset_index(drop=True)
 
     print(
-        f"Selected {len(selected)} volumes. "
-        f"Skipped missing={skipped_missing}, invalid={skipped_invalid}."
+        f"Collected valid metadata pool: {len(valid_pool)} volumes. \n"
+        f"Skipped not-found={skipped_not_found}, unreadable={skipped_unreadable}.\n"
+        f"Repeating paths={repeating_paths}\n"
+        f"unreadable={skipped_unreadable}\n"
     )
-    return selected
+    return valid_pool
 
 
-def create_dataset_split(
-    config: DatasetCreationConfig,
-) -> pd.DataFrame:
-    validate_config(config)
-    print("config validated")
-    source_csv_path = (config.source_dataset_root / config.source_csv_name)
-    print(f"loading source_csv_path: {source_csv_path}")
-    metadata = load_metadata(source_csv_path)
-    print(f"metadata loaded. length: {metadata.shape[0]}")
-    split_root = config.output_dataset_root / config.split_name
-    print(f"saving split_root: {split_root}")
-    prepare_output_directories(split_root, config.retain_ratios)
+def sample_split_volume_rows(
+    valid_pool: pd.DataFrame,
+    plan: DatasetCreationPlan,
+    rng: np.random.Generator,
+) -> dict[str, pd.DataFrame]:
+    counts = {
+        split_name: int(plan.split_multiplicity[split_name].number_of_volumes)
+        for split_name in DL_SPLITS
+    }
+    requested_total = sum(counts.values())
+    if requested_total > len(valid_pool):
+        raise RuntimeError(
+            f"Requested {requested_total} volumes across splits, but only "
+            f"{len(valid_pool)} valid unique volumes are available."
+        )
+    # random list of indices
+    shuffled_indices = rng.permutation(len(valid_pool))
+    sampled_rows: dict[str, pd.DataFrame] = {}
+    cursor = 0
+    for split_name in DL_SPLITS:
+        print(f"sampling items for {split_name}")
+        count = counts[split_name]
+        # next sub list of reandome indices
+        split_indices = shuffled_indices[cursor:cursor + count]
+        #take the item: copy, re index
+        sampled_rows[split_name] = valid_pool.iloc[split_indices].copy().reset_index(drop=True)
+        cursor += count
 
-    print(f"current working directory: {os.getcwd()}")
+    return sampled_rows
 
-    selection_rng = np.random.default_rng(config.first_seed)
-    selected_volumes = choose_existing_volumes(
-        metadata,
-        config,
-        selection_rng,
-    )
 
-    output_dtype = np.dtype(config.output_dtype)
+def _create_split_from_rows(
+    split_name: str,
+    selected_rows: pd.DataFrame,
+    plan: DatasetCreationPlan,
+    selection_rng: np.random.Generator,
+    next_mask_seed: int,
+) -> tuple[pd.DataFrame, int]:
+    split_root = plan.output_dataset_root / split_name
+    split_config = plan.split_multiplicity[split_name]
+    output_dtype = np.dtype(plan.output_dtype)
     csv_records: list[dict[str, object]] = []
-
-    # Kept independent of volume/slice selection RNG consumption.
-    next_mask_seed = int(config.first_seed)
     sample_counter = 0
     original_counter = 0
 
-
-    for selected_number, (csv_row_index, row, volume_path) in enumerate(
-        selected_volumes,
-        start=1,
-    ):
+    for selected_number, (_, row) in enumerate(selected_rows.iterrows(), start=1):
+        volume_path = Path(str(row["resolved_volume_path"]))
         volume = load_volume(volume_path)
         if volume is None:
-            # The path was checked above, but this keeps the loop robust.
+            # Path validity is checked during pool creation, but keep runtime robust.
             continue
 
         subject_value = (
-            row[config.subject_column]
-            if config.subject_column in metadata.columns
+            row[plan.subject_column]
+            if plan.subject_column in selected_rows.columns
             else volume_path.stem
         )
         subject_id = safe_token(subject_value)
-        volume_token = f"{subject_id}_row{csv_row_index:06d}"
+        source_row = int(row.get("source_metadata_row", selected_number))
+        volume_token = f"{subject_id}_row{source_row:06d}"
 
         print(
-            f"[{selected_number}/{len(selected_volumes)}] "
+            f"[{split_name} {selected_number}/{len(selected_rows)}] "
             f"{volume_path}, shape={volume.shape}"
         )
 
-        for plane in config.planes:
-            axis = brain_planes[plane]
+        for plane in plan.planes:
+            axis = BRAIN_PLANES[plane]
             candidates = candidate_slice_indices(
                 volume.shape[axis],
-                config.slice_percentile_range,
+                plan.slice_percentile_range,
             )
-            slice_count = get_slice_count(
-                config.slices_per_volume_per_plane,
-                plane,
-            )
-
+            slice_count = split_config.slices_per_volume_per_plane
             if slice_count > len(candidates):
                 raise ValueError(
                     f"Requested {slice_count} {plane} slices from "
@@ -442,10 +412,11 @@ def create_dataset_split(
             selected_slice_indices.sort()
 
             for slice_index in selected_slice_indices:
-                raw_slice = extract_slice(
-                    volume,
-                    plane,
-                    int(slice_index),
+                # Use shared volume slicing logic to keep orientation/axis handling consistent.
+                _, raw_slice = extract_slice(
+                    volume=volume,
+                    axis=axis,
+                    slice_index=int(slice_index),
                 )
                 normalized_slice = min_max_normalize(raw_slice).astype(
                     output_dtype,
@@ -457,57 +428,54 @@ def create_dataset_split(
                     f"{volume_token}_{plane_token}_"
                     f"s{int(slice_index):04d}"
                 )
-                original_relative_path = (
-                    Path("originals") / f"{original_id}.npy"
-                )
-                original_absolute_path = (
-                    split_root / original_relative_path
-                )
+                original_relative_path = Path("originals") / f"{original_id}.npy"
                 np.save(
-                    original_absolute_path,
+                    split_root / original_relative_path,
                     normalized_slice,
                     allow_pickle=False,
                 )
                 original_counter += 1
 
                 original_k_space = image_to_kspace(normalized_slice)
-
-                for retain_ratio in config.retain_ratios:
+                for retain_ratio in plan.retain_ratios:
                     ratio_folder = ratio_folder_name(retain_ratio)
-                    retain_percentage = int(
-                        round(retain_ratio * 100)
-                    )
-
+                    retain_percentage = int(round(retain_ratio * 100))
                     for repetition_index in range(
-                        config.undersampling_per_slice
+                        split_config.undersampling_per_slice
                     ):
                         mask_seed = next_mask_seed
                         next_mask_seed += 1
-
                         row_mask = create_unique_row_mask(
                             number_of_rows=original_k_space.shape[0],
                             retain_ratio=retain_ratio,
                             seed=mask_seed,
-                            sigma_fraction=config.sigma_fraction,
+                            sigma_fraction=plan.sigma_fraction,
                         )
                         undersampled_k_space = apply_row_mask(
                             original_k_space,
                             row_mask,
                         )
-                        undersampled_image = kspace_to_image(
-                            undersampled_k_space
-                        ).astype(output_dtype, copy=False)
-
                         sample_id = (
                             f"{original_id}_r{retain_percentage:02d}_"
                             f"u{repetition_index:03d}"
                         )
-                        mask_id = f"mask_{sample_id}"
-
-                        mask_relative_path = (
-                            Path("masks")
+                        k_space_relative_path = (
+                            Path("k_spaces")
                             / ratio_folder
-                            / f"{mask_id}.npy"
+                            / f"{sample_id}.npy"
+                        )
+                        np.save(
+                            split_root / k_space_relative_path,
+                            undersampled_k_space,
+                            allow_pickle=False,
+                        )
+                        undersampled_image = kspace_to_image(
+                            undersampled_k_space
+                        ).astype(output_dtype, copy=False)
+
+                        mask_id = f"mask_{sample_id}"
+                        mask_relative_path = (
+                            Path("masks") / ratio_folder / f"{mask_id}.npy"
                         )
                         undersampled_relative_path = (
                             Path("undersampled")
@@ -530,9 +498,8 @@ def create_dataset_split(
                             {
                                 "sample_id": sample_id,
                                 "subject_id": str(subject_value),
-                                "original_volume_path": str(
-                                    row[config.path_column]
-                                ),
+                                "original_volume_path": str(row[plan.path_column]),
+                                "resolved_volume_path": str(volume_path),
                                 "plane": plane,
                                 "slice_index": int(slice_index),
                                 "original_image_file": str(
@@ -540,11 +507,13 @@ def create_dataset_split(
                                 ),
                                 "retain_ratio": float(retain_ratio),
                                 "mask_id": mask_id,
-                                "mask_file": str(
-                                    mask_relative_path.as_posix()
-                                ),
+                                "mask_file": str(mask_relative_path.as_posix()),
+                                "k_space_file": str(k_space_relative_path.as_posix()),
                                 "undersampled_image_file": str(
                                     undersampled_relative_path.as_posix()
+                                ),
+                                "source_metadata_split": str(
+                                    row.get("source_metadata_split", "unknown")
                                 ),
                                 "source_shape": json.dumps(
                                     list(normalized_slice.shape)
@@ -556,152 +525,69 @@ def create_dataset_split(
     samples = pd.DataFrame.from_records(csv_records)
     csv_output_path = split_root / "samples.csv"
     samples.to_csv(csv_output_path, index=False)
-
     print(
-        f"Created split '{config.split_name}' at {split_root}\n"
-        f"Volumes: {len(selected_volumes)}\n"
+        f"Created split '{split_name}' at {split_root}\n"
+        f"Volumes: {len(selected_rows)}\n"
         f"Original slices: {original_counter}\n"
         f"Undersampled samples: {sample_counter}\n"
         f"CSV: {csv_output_path}"
     )
-
-    return samples
-
-
-def parse_plane_slice_counts(
-    value: str,
-) -> int | dict[str, int]:
-    """
-    Parse either:
-        "20"
-    or:
-        "Axial=20,Coronal=15,Sagittal=15"
-    """
-    value = value.strip()
-    if "=" not in value:
-        return int(value)
-
-    result: dict[str, int] = {}
-    for item in value.split(","):
-        plane, count = item.split("=", maxsplit=1)
-        result[plane.strip()] = int(count)
-    return result
+    return samples, next_mask_seed
 
 
-def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Create a precomputed MRI undersampling dataset split."
-    )
-    parser.add_argument(
-        "--split",
-        required=True,
-        choices=("train", "val", "test"),
-    )
-    parser.add_argument(
-        "--source-root",
-        required=True,
-        type=Path,
-    )
-    parser.add_argument(
-        "--source-csv",
-        required=True,
-    )
-    parser.add_argument(
-        "--output-root",
-        required=True,
-        type=Path,
-    )
-    parser.add_argument(
-        "--number-of-volumes",
-        required=True,
-        type=int,
-    )
-    parser.add_argument(
-        "--slices-per-plane",
-        required=True,
-        type=parse_plane_slice_counts,
-        help=(
-            "One count for every plane, e.g. '20', or plane-specific "
-            "counts, e.g. 'Axial=20,Coronal=15,Sagittal=15'."
-        ),
-    )
-    parser.add_argument(
-        "--slice-percentiles",
-        nargs=2,
-        type=float,
-        default=(25.0, 75.0),
-        metavar=("LOW", "HIGH"),
-    )
-    parser.add_argument(
-        "--undersampling-per-slice",
-        required=True,
-        type=int,
-    )
-    parser.add_argument(
-        "--planes",
-        nargs="+",
-        default=("Axial",),
-        choices=tuple(brain_planes.keys()),
-    )
-    parser.add_argument(
-        "--retain-ratios",
-        nargs="+",
-        type=float,
-        default=DEFAULT_RETAIN_RATIOS,
-    )
-    parser.add_argument(
-        "--first-seed",
-        type=int,
-        default=0,
-    )
-    parser.add_argument(
-        "--sigma-fraction",
-        type=float,
-        default=1 / 6,
-    )
-    parser.add_argument(
-        "--path-column",
-        default="filePath",
-    )
-    parser.add_argument(
-        "--subject-column",
-        default="Subject",
-    )
-    parser.add_argument(
-        "--output-dtype",
-        default="float32",
-        choices=("float32", "float64"),
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-    )
-    return parser
+def create_dataset_split(
+    config: DatasetCreationPlan,
+) -> dict[str, pd.DataFrame]:
 
+    validate_creation_plan(config)
+    config.output_dataset_root.mkdir(parents=True, exist_ok=True)
 
-def main() -> None:
-    args = build_argument_parser().parse_args()
+    valid_pool: pd.DataFrame = collect_valid_metadata_pool(config)
+    valid_pool_csv_path = config.output_dataset_root / VALID_METADATA_FILE_NAME
+    valid_pool.to_csv(valid_pool_csv_path, index=False)
+    print(f"Saved unified valid metadata CSV: {valid_pool_csv_path}")
 
-    config = DatasetCreationConfig(
-        split_name=args.split,
-        source_dataset_root=args.source_root,
-        source_csv_name=args.source_csv,
-        output_dataset_root=args.output_root,
-        number_of_volumes=args.number_of_volumes,
-        slices_per_volume_per_plane=args.slices_per_plane,
-        slice_percentile_range=tuple(args.slice_percentiles),
-        undersampling_per_slice=args.undersampling_per_slice,
-        planes=tuple(args.planes),
-        retain_ratios=tuple(args.retain_ratios),
-        first_seed=args.first_seed,
-        sigma_fraction=args.sigma_fraction,
-        path_column=args.path_column,
-        subject_column=args.subject_column,
-        output_dtype=args.output_dtype,
-        overwrite=args.overwrite,
+    selection_rng = np.random.default_rng(config.first_seed)
+    # split:rows-list
+    sampled_rows_by_split = sample_split_volume_rows(
+        valid_pool,
+        config,
+        selection_rng,
     )
-    create_dataset_split(config)
+    split_assignment_records: list[dict[str, object]] = []
+    next_mask_seed = int(config.first_seed)
+    outputs: dict[str, pd.DataFrame] = {}
+    for split_name in DL_SPLITS:
+        split_root = config.output_dataset_root / split_name
+        prepare_output_directories(split_root, config.retain_ratios)
 
+        sampled_rows = sampled_rows_by_split[split_name]
+        for _, row in sampled_rows.iterrows():
+            split_assignment_records.append(
+                {
+                    "split": split_name,
+                    "original_volume_path": str(row[config.path_column]),
+                    "resolved_volume_path": str(row["resolved_volume_path"]),
+                    "source_metadata_split": str(
+                        row.get("source_metadata_split", "unknown")
+                    ),
+                }
+            )
 
-if __name__ == "__main__":
-    main()
+        samples, next_mask_seed = _create_split_from_rows(
+            split_name=split_name,
+            selected_rows=sampled_rows,
+            plan=config,
+            selection_rng=selection_rng,
+            next_mask_seed=next_mask_seed,
+        )
+        outputs[split_name] = samples
+
+    assignment_csv_path = config.output_dataset_root / SPLIT_VOLUME_ASSIGNMENT
+    pd.DataFrame.from_records(split_assignment_records).to_csv(
+        assignment_csv_path,
+        index=False,
+    )
+    print(f"Saved split assignment CSV: {assignment_csv_path}")
+
+    return outputs
