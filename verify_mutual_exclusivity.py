@@ -16,8 +16,8 @@ from src.create_mri_dataset import SPLIT_VOLUME_ASSIGNMENT
 HPC = False
 prepare_environment(hpc=HPC)
 
-# Point to existing dataset (do NOT create a new one)
-data_sets_root = Path(os.getcwd() + r"/../reconstruction_dataset").resolve()
+# Point to existing split dataset (do NOT create a new one)
+data_sets_root = Path(os.getcwd() + r"/../undersampled_dataset_split").resolve()
 
 # Load the split assignment
 assignment_csv_path = data_sets_root / SPLIT_VOLUME_ASSIGNMENT

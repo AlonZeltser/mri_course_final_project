@@ -61,7 +61,7 @@ from torch.utils.data import DataLoader
 from mri_dl import MRIUndersampledDataset, ResidualUNet, load_checkpoint, evaluate_and_save_results
 
 test_dataset = MRIUndersampledDataset(
-    Path("../reconstruction_dataset") / "test",
+    Path("../undersampled_dataset_split") / "test",
     csv_name="samples.csv",
     plane="Coronal",
     retain_ratio=0.30,

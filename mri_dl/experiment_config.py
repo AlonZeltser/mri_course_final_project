@@ -22,7 +22,7 @@ class ModelConfig:
     device: str | None
     data_consistency_enabled: bool
     per_image_csv_logging: bool
-    data_root: Path = Path("reconstruction_dataset")
+    data_root: Path = Path("..").joinpath("reconstruction_dataset")
     model_name: str = "ResidualUNet"
     base_channels: int = 16
     input_channels: int = 1
@@ -32,7 +32,7 @@ class ModelConfig:
     # Evaluation and output policy.
     psnr_data_range: str = "reference_min_max"
     ssim_data_range: str = "reference_min_max"
-    result_root: Path = Path("results")
+    result_root: Path = Path("..").joinpath("results")
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "plane", self.plane.lower())

@@ -122,7 +122,7 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> i
 		raise
 
 	csv_path = model_config.test_results_path
-	figure_path = model_config.result_root / "comparison_figure.png"
+	figure_path = model_config.result_dir / "comparison_figure.png"
 	_save_comparison_figure(test_dataset, reloaded_model, figure_path)
 
 	required = {
@@ -267,7 +267,7 @@ def _run_sequence(params: dict) -> int:
 			print(f"  test samples  : {test_count}")
 			print(f"  checkpoint    : {model_config.checkpoint_path}")
 			print(f"  csv           : {model_config.test_results_path}")
-			print(f"  figure        : {model_config.result_root / 'comparison_figure.png'}")
+			print(f"  figure        : {model_config.result_dir / 'comparison_figure.png'}")
 			print(f"  config        : {model_config.result_dir / 'config_used.json'}")
 			print(f"  result        : {status}")
 			print("=" * 60)
