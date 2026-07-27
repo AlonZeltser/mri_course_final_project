@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 import random
 from typing import Any, TYPE_CHECKING
@@ -9,7 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 if TYPE_CHECKING:
-    from .experiment_config import ExperimentConfig
+    from .experiment_config import ModelConfig
 
 
 @dataclass
@@ -22,9 +23,7 @@ class TrainConfig:
     device: str | None = None
 
 
-def choose_device(requested: str | None = None) -> torch.device:
-    if requested is not None:
-        return torch.device(requested)
+def choose_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device('cuda')
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
@@ -66,7 +65,9 @@ def save_checkpoint(path: str | Path, model: nn.Module,
                     optimizer: torch.optim.Optimizer, epoch: int,
                     validation_loss: float, model_kwargs: dict[str, Any],
                     train_config: TrainConfig) -> None:
-    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print("Saving checkpoint to {}".format(path))
     torch.save({
         'epoch': epoch,
         'validation_loss': validation_loss,
@@ -80,11 +81,10 @@ def save_checkpoint(path: str | Path, model: nn.Module,
 def train_model(model: nn.Module, train_loader: DataLoader,
                 val_loader: DataLoader, train_config: TrainConfig,
                 model_kwargs: dict[str, Any],
-                experiment_config: 'ExperimentConfig | None' = None) -> dict[str, list[float]]:
-    if experiment_config is not None:
-        experiment_config.save()
+                experiment_config: ModelConfig) -> dict[str, list[float]]:
+    experiment_config.save()
     set_seed(train_config.seed)
-    device = choose_device(train_config.device)
+    device = choose_device()
     model.to(device)
     criterion = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=train_config.learning_rate,
@@ -92,6 +92,7 @@ def train_model(model: nn.Module, train_loader: DataLoader,
     history = {'train_loss': [], 'val_loss': []}
     best = float('inf')
     print(f'Training on device: {device}')
+    print(f"Training model. start: {datetime.now().strftime('%H:%M:%S')}")
     for epoch in range(1, train_config.epochs + 1):
         train_loss = run_epoch(model, train_loader, criterion, device, optimizer)
         val_loss = run_epoch(model, val_loader, criterion, device)
@@ -101,17 +102,17 @@ def train_model(model: nn.Module, train_loader: DataLoader,
         print(f'Epoch {epoch:03d}/{train_config.epochs:03d} | train={train_loss:.6f} | val={val_loss:.6f}' + (' *' if improved else ''))
         if improved:
             best = val_loss
-            save_checkpoint(train_config.checkpoint_path, model, optimizer, epoch,
+            save_checkpoint( train_config.checkpoint_path, model, optimizer, epoch,
                             val_loss, model_kwargs, train_config)
+    print(f"Training model. end: {datetime.now().strftime('%H:%M:%S')}")
     return history
 
 
-def load_checkpoint(checkpoint_path: str | Path, model_class: type[nn.Module],
-                    device: str | torch.device | None = None):
-    resolved = choose_device(str(device) if device is not None else None)
-    checkpoint = torch.load(checkpoint_path, map_location=resolved)
+def load_checkpoint(checkpoint_path: str | Path, model_class: type[nn.Module]):
+    device = choose_device()
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     model = model_class(**checkpoint.get('model_kwargs', {}))
     model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(resolved)
+    model.to(device)
     model.eval()
     return model, checkpoint

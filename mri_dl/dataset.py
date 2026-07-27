@@ -1,6 +1,5 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Sequence
 import numpy as np
 import pandas as pd
 import torch
@@ -9,10 +8,10 @@ from torch.utils.data import Dataset
 
 class MRIUndersampledDataset(Dataset):
     def __init__(self, split_root: str | Path,
-                 csv_name: str = 'samples.csv',
-                 planes: Sequence[str] | None = None,
-                 retain_ratios: Sequence[float] | None = None,
-                 load_mask: bool = False) -> None:
+                 csv_name: str,
+                 plane: str,
+                 retain_ratio: float,
+                 load_mask: bool) -> None:
         self.split_root = Path(split_root)
         csv_path = self.split_root / csv_name
         if not csv_path.exists():
@@ -23,13 +22,10 @@ class MRIUndersampledDataset(Dataset):
         missing = required - set(self.samples.columns)
         if missing:
             raise ValueError(f'CSV is missing required columns: {sorted(missing)}')
-        if planes is not None:
-            self.samples = self.samples[self.samples['plane'].isin(list(planes))]
-        if retain_ratios is not None:
-            values = np.asarray(retain_ratios, dtype=float)
-            keep = self.samples['retain_ratio'].apply(
-                lambda x: np.any(np.isclose(float(x), values, atol=1e-8)))
-            self.samples = self.samples[keep]
+        self.samples = self.samples[self.samples['plane'] == plane]
+        keep = self.samples['retain_ratio'].apply(
+            lambda x: np.isclose(float(x), float(retain_ratio), atol=1e-8))
+        self.samples = self.samples[keep]
         self.samples = self.samples.reset_index(drop=True)
         self.load_mask = load_mask
         if len(self.samples) == 0:

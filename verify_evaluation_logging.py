@@ -76,7 +76,13 @@ if __name__ == "__main__":
 
         pd.DataFrame(rows).to_csv(split_root / "samples.csv", index=False)
 
-        dataset = MRIUndersampledDataset(split_root, planes=("Coronal",), retain_ratios=(0.30,), load_mask=True)
+        dataset = MRIUndersampledDataset(
+            split_root,
+            csv_name="samples.csv",
+            plane="Coronal",
+            retain_ratio=0.30,
+            load_mask=True,
+        )
         loader = DataLoader(dataset, batch_size=2, shuffle=False, num_workers=0)
 
         results_df = evaluate_and_save_results(

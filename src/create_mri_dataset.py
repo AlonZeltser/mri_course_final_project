@@ -45,6 +45,7 @@ class DatasetCreationPlan:
     subject_column: str = "Subject"
     output_dtype: str = "float32"
     overwrite: bool = False
+    csv_file_name: str = "samples.csv"
 
 
 def validate_creation_plan(plan: DatasetCreationPlan) -> None:
@@ -361,6 +362,7 @@ def _create_split_from_rows(
     plan: DatasetCreationPlan,
     selection_rng: np.random.Generator,
     next_mask_seed: int,
+    csv_file_name: str,
 ) -> tuple[pd.DataFrame, int]:
     split_root = plan.output_dataset_root / split_name
     split_config = plan.split_multiplicity[split_name]
@@ -523,7 +525,7 @@ def _create_split_from_rows(
                         sample_counter += 1
 
     samples = pd.DataFrame.from_records(csv_records)
-    csv_output_path = split_root / "samples.csv"
+    csv_output_path = split_root / csv_file_name
     samples.to_csv(csv_output_path, index=False)
     print(
         f"Created split '{split_name}' at {split_root}\n"
@@ -580,6 +582,7 @@ def create_dataset_split(
             plan=config,
             selection_rng=selection_rng,
             next_mask_seed=next_mask_seed,
+            csv_file_name=config.csv_file_name,
         )
         outputs[split_name] = samples
 

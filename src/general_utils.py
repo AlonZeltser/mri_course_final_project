@@ -11,6 +11,8 @@ BRAIN_PLANES = {
     'Coronal':1,
     'Axial':2
 }
+BRAIN_PLANE_KEYS_LOWER = (key.lower() for key in BRAIN_PLANES.keys())
+
 DL_SPLITS= ("train", "test", "val")
 
 def prepare_environment(hpc:bool):

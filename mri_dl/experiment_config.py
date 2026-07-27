@@ -1,7 +1,7 @@
 """Small, reusable configuration for one MRI reconstruction experiment."""
 
 from __future__ import annotations
-
+from .train_utils import TrainConfig
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,7 +11,7 @@ from src.general_utils import BRAIN_PLANES
 RETAIN_RATIOS = (0.20, 0.30, 0.50)
 
 @dataclass(frozen=True)
-class ExperimentConfig:
+class ModelConfig:
     plane: str
     retain_ratio: float
     epochs: int
@@ -38,13 +38,27 @@ class ExperimentConfig:
         object.__setattr__(self, "plane", self.plane.lower())
         self.validate()
 
+
+
     @property
-    def experiment_name(self) -> str:
+    def test_results_path(self) -> Path:
+        return self.result_dir / "test_per_image.csv"
+
+    @property
+    def history_path(self) -> Path:
+        return self.result_dir / "training_history.json"
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.result_dir / "best_model.pt"
+
+    @property
+    def experiment_relative_path(self) -> str:
         return f"{self.plane}/retain_{int(round(self.retain_ratio * 100))}"
 
     @property
     def result_dir(self) -> Path:
-        return Path(self.result_root) / self.experiment_name
+        return Path(self.result_root) / self.experiment_relative_path
 
     @property
     def train_data_root(self) -> Path:
@@ -66,19 +80,12 @@ class ExperimentConfig:
             "base_channels": self.base_channels,
         }
 
-    @property
-    def dataset_filter_kwargs(self) -> dict[str, tuple[str, ...] | tuple[float, ...]]:
-        return {"planes": (self.plane.capitalize(),), "retain_ratios": (self.retain_ratio,)}
 
-    def make_train_config(self, checkpoint_path: str | Path | None = None) -> Any:
-        """Build the existing ``TrainConfig`` without duplicating its definition."""
-        from .train_utils import TrainConfig
-
-        checkpoint = checkpoint_path or (self.result_dir / "best_model.pt")
+    def make_train_config(self) -> Any:
         return TrainConfig(
             epochs=self.epochs,
             learning_rate=self.learning_rate,
-            checkpoint_path=str(checkpoint),
+            checkpoint_path=str(self.checkpoint_path),
             seed=self.random_seed,
             device=self.device,
         )
@@ -110,7 +117,7 @@ class ExperimentConfig:
         """Return JSON-safe resolved settings, including smoke/full overrides."""
         values = asdict(self)
         values.update({
-            "experiment_name": self.experiment_name,
+            "experiment_name": self.experiment_relative_path,
             "result_dir": str(self.result_dir),
             "train_data_root": str(self.train_data_root),
             "validation_data_root": str(self.validation_data_root),
@@ -120,9 +127,9 @@ class ExperimentConfig:
         values["result_root"] = str(self.result_root)
         return values
 
-    def save(self, path: str | Path | None = None) -> Path:
+    def save(self) -> Path:
         """Save resolved settings; by default use ``result_dir/config_used.json``."""
-        output_path = Path(path) if path is not None else self.result_dir / "config_used.json"
+        output_path = self.result_dir / "config_used.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return output_path

@@ -2,7 +2,7 @@
 
 ## Minimal experiment configuration
 
-`mri_dl.ExperimentConfig` is the single experiment-level configuration. The
+`mri_dl.ModelConfig` is the single experiment-level configuration. The
 notebook `06_a_simple_cnn_for_nb_05.ipynb` creates it near the beginning; change
 only `plane`, `retain_ratio`, and `run_mode` there to select a run.
 
@@ -62,8 +62,9 @@ from mri_dl import MRIUndersampledDataset, ResidualUNet, load_checkpoint, evalua
 
 test_dataset = MRIUndersampledDataset(
     Path("../reconstruction_dataset") / "test",
-    planes=("Coronal",),
-    retain_ratios=(0.30,),
+    csv_name="samples.csv",
+    plane="Coronal",
+    retain_ratio=0.30,
     load_mask=True,
 )
 test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=0)

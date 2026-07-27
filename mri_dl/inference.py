@@ -17,7 +17,7 @@ def predict_tensor(model: nn.Module, input_tensor: torch.Tensor,
       - [C, H, W]    -> [C, H, W]
       - [N, C, H, W] -> [N, C, H, W]
     """
-    resolved = choose_device(str(device) if device is not None else None)
+    resolved = choose_device()
     model.to(resolved); model.eval()
 
     input_ndim = input_tensor.ndim

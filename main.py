@@ -1,5 +1,343 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+from __future__ import annotations
 
-print("Environment works")
+import argparse
+import json
+import os
+from dataclasses import asdict
+from pathlib import Path
+from pprint import pprint
+from typing import cast
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch import Tensor
+from torch.utils.data import DataLoader
+
+from mri_dl import (
+	ModelConfig,
+	MRIUndersampledDataset,
+	RETAIN_RATIOS,
+	ResidualUNet,
+	evaluate_and_save_results,
+	load_checkpoint,
+	predict_numpy,
+	predict_numpy_with_data_consistency,
+	train_model, choose_device,
+)
+from src.create_mri_dataset import DatasetCreationPlan, SplitMultiplicityConfig, create_dataset_split
+from src.general_utils import BRAIN_PLANES, SCV_FILES, BRAIN_PLANE_KEYS_LOWER
+from src.k_space_utils import image_to_kspace, kspace_log_magnitude
+from src.metrices import calculate_psnr, calculate_ssim
+
+def _save_training_history(history: dict[str, list[float]], output_path: Path) -> None:
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	output_path.write_text(json.dumps(history, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _verify_required_files(required_paths: dict[str, Path]) -> list[str]:
+	missing: list[str] = []
+	for label, path in required_paths.items():
+		if not path.exists():
+			missing.append(f"{label} ({path})")
+	return missing
+
+
+def _save_comparison_figure(dataset: MRIUndersampledDataset, model: ResidualUNet, output_path: Path) -> None:
+	sample = dataset[0]
+	undersampled = cast(Tensor, sample["input"])[0].numpy()
+	target = cast(Tensor, sample["target"])[0].numpy()
+	k_space_path = dataset.split_root / str(sample["k_space_file"])
+	mask_path = dataset.split_root / str(sample["mask_file"])
+	acquired_k_space = np.load(k_space_path, allow_pickle=False)
+	row_mask = np.load(mask_path, allow_pickle=False)
+	device = choose_device()
+
+	resunet = predict_numpy(model, undersampled, device=device)
+	final_dc = predict_numpy_with_data_consistency(
+		model=model,
+		image=undersampled,
+		acquired_k_space=acquired_k_space,
+		row_mask=row_mask,
+		device=device,
+	)
+
+	panels = [
+		("Target", target),
+		("Undersampled", undersampled),
+		("ResUNet", resunet),
+		("ResUNet + DC", final_dc),
+	]
+	fig, axes = plt.subplots(2, 4, figsize=(14, 7))
+	for idx, (title, image) in enumerate(panels):
+		if np.allclose(target, image):
+			psnr, ssim = float("inf"), 1.0
+		else:
+			psnr = calculate_psnr(target, image)
+			ssim = calculate_ssim(target, image)
+		axes[0, idx].imshow(image, cmap="gray")
+		axes[0, idx].set_title(f"{title}\nPSNR={psnr:.2f} SSIM={ssim:.3f}")
+		axes[0, idx].axis("off")
+		axes[1, idx].imshow(kspace_log_magnitude(image_to_kspace(image)), cmap="magma")
+		axes[1, idx].set_title(f"{title} k-space")
+		axes[1, idx].axis("off")
+
+	fig.tight_layout()
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	fig.savefig(output_path, dpi=150)
+	plt.close(fig)
+
+
+
+def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> int:
+	"""Evaluate test split; return number of test samples."""
+	print("Evaluate sequence start")
+	print("loading test data sequence")
+	test_dataset = MRIUndersampledDataset(
+		model_config.test_data_root,
+		csv_name=dataset_plan.csv_file_name,
+		plane=model_config.plane.capitalize(),
+		retain_ratio=model_config.retain_ratio,
+		load_mask=True)
+	test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=0)
+	print("Evaluating model...")
+	try:
+		reloaded_model, checkpoint = load_checkpoint(model_config.checkpoint_path, ResidualUNet)
+	except Exception as exc:
+		raise RuntimeError(f"Checkpoint loading failed for {model_config.checkpoint_path}: {exc}") from exc
+	try:
+		_ = evaluate_and_save_results(
+			model=reloaded_model,
+			test_loader=test_loader,
+			output_root=model_config.result_root,
+			plane=model_config.plane,
+			retain_ratio=model_config.retain_ratio,
+			checkpoint_name=model_config.checkpoint_path.name,
+			epoch=int(checkpoint["epoch"]),
+		)
+	except ValueError as exc:
+		if "Shape mismatch" in str(exc):
+			raise ValueError(f"Tensor shapes do not match during evaluation: {exc}") from exc
+		raise
+
+	csv_path = model_config.test_results_path
+	figure_path = model_config.result_root / "comparison_figure.png"
+	_save_comparison_figure(test_dataset, reloaded_model, figure_path)
+
+	required = {
+		"checkpoint": model_config.checkpoint_path,
+		"training_history": model_config.history_path,
+		"config_used": model_config.result_dir / "config_used.json",
+		"test_per_image_csv": csv_path,
+		"comparison_figure": figure_path,
+	}
+	missing = _verify_required_files(required)
+	if missing:
+		raise FileNotFoundError(f"Result files were not created: {missing}")
+
+	return len(test_dataset)
+
+def _create_and_train_model(model_config: ModelConfig, train_loader: DataLoader, val_loader: DataLoader) -> None:
+	model_config.save()  # persist config_used.json before training starts
+	model_kwargs = model_config.model_kwargs
+	model = ResidualUNet(**model_kwargs)
+	train_config = model_config.make_train_config()
+	history = train_model(
+		model=model,
+		train_loader=train_loader,
+		val_loader=val_loader,
+		train_config=train_config,
+		model_kwargs=model_kwargs,
+		experiment_config=model_config,
+	)
+	if not model_config.checkpoint_path.exists():
+		raise FileNotFoundError(f"Checkpoint saving failed, file not found: {model_config.checkpoint_path}")
+	_save_training_history(history, model_config.history_path)
+
+def _create_train_data_loaders(params: dict, model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> tuple[DataLoader, DataLoader, int, int]:
+	"""Return (train_loader, val_loader, train_count, val_count)."""
+	data_sets_root = model_config.data_root
+	train_dataset = MRIUndersampledDataset(
+		data_sets_root / "train",
+		csv_name=dataset_plan.csv_file_name,
+		plane=model_config.plane.capitalize(),
+		retain_ratio=model_config.retain_ratio,
+		load_mask=False)
+	val_dataset = MRIUndersampledDataset(
+		data_sets_root / "val",
+		csv_name=dataset_plan.csv_file_name,
+		plane=model_config.plane.capitalize(),
+		retain_ratio=model_config.retain_ratio,
+		load_mask=False)
+
+	train_loader = DataLoader(
+		train_dataset,
+		batch_size=model_config.batch_size,
+		shuffle=True,
+		num_workers=model_config.num_workers,
+		pin_memory=torch.cuda.is_available(),
+	)
+	val_loader = DataLoader(
+		val_dataset,
+		batch_size=model_config.batch_size,
+		shuffle=False,
+		num_workers=model_config.num_workers,
+		pin_memory=torch.cuda.is_available(),
+	)
+	return train_loader, val_loader, len(train_dataset), len(val_dataset)
+
+def _create_model_config(params, plane, retain_ratio) -> ModelConfig:
+	result = ModelConfig(
+		plane=plane,
+		retain_ratio=float(retain_ratio),
+		epochs=params["epochs"],
+		batch_size=32,
+		learning_rate=5e-4,
+		random_seed=42,
+		num_workers=0 if os.name == "nt" else 4,
+		device="cuda" if torch.cuda.is_available() else "cpu",
+		data_consistency_enabled=True,
+		per_image_csv_logging=True,
+		data_root=Path(str(params["dataset_split_root"])).resolve(),
+		result_root=Path(str(params["results_root"])).resolve(),
+	)
+	print("Model config created:")
+	print("===============================")
+	pprint(asdict(result))
+	print("===============================")
+	return result
+
+def _create_undersampled_data_set(params:dict) -> DatasetCreationPlan:
+	data_creation_plan = DatasetCreationPlan(
+		source_dataset_root=Path(os.getcwd()),
+		source_csv_names=SCV_FILES,
+		output_dataset_root=params["dataset_split_root"],
+		split_multiplicity={
+			"train": params["train_set_size"],
+			"val": params["val_set_size"],
+			"test": params["test_set_size"],
+		},
+		slice_percentile_range=(35.0, 65.0),
+		planes=params["selected_planes"],
+		retain_ratios=params["retain_ratios"],
+		first_seed=1234,
+		sigma_fraction=1 / 6,
+	)
+	if params["skip_split_creation"]:
+		print("Skip splitting creation")
+		return data_creation_plan
+	print("Creating undersampled data set:")
+	print("===============================")
+	pprint(asdict(data_creation_plan))
+	print("===============================")
+	create_dataset_split(data_creation_plan)
+	print(f"Data set created at: {data_creation_plan.output_dataset_root}")
+	return data_creation_plan
+
+
+def _run_sequence(params: dict) -> int:
+	dataset_plan = _create_undersampled_data_set(params)
+	all_passed = True
+	for plane in params["selected_planes"]:
+		for retain_ratio in params["retain_ratios"]:
+			print(f"\nExecuting undersampled experiment: plane={plane}, retain_ratio={retain_ratio}")
+			model_config = _create_model_config(params, plane, retain_ratio)
+			train_loader, val_loader, train_count, val_count = _create_train_data_loaders(params, model_config, dataset_plan)
+			status = "PASS"
+			test_count = 0
+			try:
+				_create_and_train_model(model_config, train_loader, val_loader)
+				test_count = _evaluate(model_config, dataset_plan)
+			except Exception as exc:
+				status = f"FAIL: {exc}"
+				all_passed = False
+
+			print("\n" + "=" * 60)
+			print(f"Status summary  plane={plane}  retain_ratio={retain_ratio}")
+			print(f"  train samples : {train_count}")
+			print(f"  val samples   : {val_count}")
+			print(f"  test samples  : {test_count}")
+			print(f"  checkpoint    : {model_config.checkpoint_path}")
+			print(f"  csv           : {model_config.test_results_path}")
+			print(f"  figure        : {model_config.result_root / 'comparison_figure.png'}")
+			print(f"  config        : {model_config.result_dir / 'config_used.json'}")
+			print(f"  result        : {status}")
+			print("=" * 60)
+
+	return 0 if all_passed else 1
+
+def _create_parameters_for_mode(args) -> dict[str, object]:
+	cwd = Path(os.getcwd())
+	if args.mode == "full":
+		result = {
+			"mode": args.mode,
+			"device": None,
+			"selected_planes": BRAIN_PLANE_KEYS_LOWER,
+			"retain_ratios": RETAIN_RATIOS,
+			"dataset_split_root": (cwd / ".." / "undersampled_dataset_split").resolve(),
+			"results_root": (cwd / ".." / "undersampled_results").resolve(),
+			"train_set_size": SplitMultiplicityConfig(
+				number_of_volumes=400,
+				slices_per_volume_per_plane=4,
+				undersampling_per_slice = 3,
+			),
+			"val_set_size": SplitMultiplicityConfig(
+				number_of_volumes=40,
+				slices_per_volume_per_plane=2,
+				undersampling_per_slice = 2
+			),
+			"test_set_size": SplitMultiplicityConfig(
+				number_of_volumes=100,
+				slices_per_volume_per_plane=2,
+				undersampling_per_slice = 2
+			),
+			"epochs": 60,
+		}
+	elif args.mode == "smoke":
+		result = {
+			"mode": args.mode,
+			"device": "cpu",
+			"selected_planes": ("Sagittal", "Coronal"),
+			"retain_ratios": (0.2,0.3),
+			"dataset_split_root": (cwd / ".." / "smoke_dataset_split").resolve(),
+			"results_root": (cwd / ".." / "smoke_results").resolve(),
+			"train_set_size": SplitMultiplicityConfig(
+				number_of_volumes=2,
+				slices_per_volume_per_plane=2,
+				undersampling_per_slice=2,
+			),
+			"val_set_size": SplitMultiplicityConfig(
+				number_of_volumes=2,
+				slices_per_volume_per_plane=2,
+				undersampling_per_slice=2
+			),
+			"test_set_size": SplitMultiplicityConfig(
+				number_of_volumes=2,
+				slices_per_volume_per_plane=2,
+				undersampling_per_slice=2
+			),
+			"epochs": 2,
+		}
+	else:
+		raise ValueError(f"Unknown mode: {args.mode}")
+	result["skip_split_creation"] = args.skip_split_creation
+	return result
+
+def main() -> int:
+	parser = argparse.ArgumentParser(description="MRI reconstruction command line runner")
+	parser.add_argument("--mode", choices=("smoke", "full"), default="smoke", help="Run smoke test or full run.")
+	parser.add_argument("--skip_split_creation", action="store_true", help="Skip the creation of dataset splits.")
+
+	args = parser.parse_args()
+
+	params = _create_parameters_for_mode(args)
+	print("Experiment Parameters:")
+	print("===============================")
+	pprint(params)
+	print("===============================")
+
+	return _run_sequence(params)
+
+
+if __name__ == "__main__":
+	raise SystemExit(main())

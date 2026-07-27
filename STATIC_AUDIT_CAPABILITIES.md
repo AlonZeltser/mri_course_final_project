@@ -14,7 +14,7 @@
 | Data-consistency post-processing | Yes | `src/k_space_utils.py` - `enforce_kspace_data_consistency` | None |
 | PSNR and SSIM calculation | Yes | `src/metrices.py` - `calculate_psnr`, `calculate_ssim` | File name typo (`metrices.py`) is non-blocking but confusing |
 | Per-image CSV logging | Yes | `mri_dl/evaluation.py` - `evaluate_and_save_results` writes per-image rows to CSV | None |
-| Configuration selection | Yes | `mri_dl/experiment_config.py` - `ExperimentConfig` validation + selected plane/retain ratio + training params | Smoke mode intentionally removed by user preference |
+| Configuration selection | Yes | `mri_dl/experiment_config.py` - `ModelConfig` validation + selected plane/retain ratio + training params | Smoke mode intentionally removed by user preference |
 | Result-directory creation | Yes | `mri_dl/experiment_config.py` - `result_dir`; `mri_dl/evaluation.py` uses `mkdir(parents=True, exist_ok=True)` | None |
 | Visualization | Yes | `mri_dl/model.py` - `visualize_model`; notebooks include sample/prediction plotting cells | Notebook cells can break if assumptions on tensor shapes/index uniqueness are changed |
 | **US dataset creation from original database (Notebook 05)** | **Yes** | `notebooks/05_create_dl_small_data_set.ipynb` calls `create_dataset_split`; `src/create_mri_dataset.py` - `create_dataset_split`, `_create_split_from_rows`, `create_unique_row_mask`, `apply_row_mask` | None |

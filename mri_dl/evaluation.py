@@ -42,7 +42,6 @@ def evaluate_and_save_results(
     retain_ratio: float,
     checkpoint_name: str | None = None,
     epoch: int | None = None,
-    device: str | torch.device | None = None,
     clamp_to_unit_range: bool = True,
 ) -> pd.DataFrame:
     """Evaluate test samples and persist one row per image to CSV."""
@@ -51,7 +50,7 @@ def evaluate_and_save_results(
     if split_root is None:
         raise ValueError("test_loader.dataset must expose split_root to resolve mask/k-space files.")
 
-    resolved_device = choose_device(str(device) if device is not None else None)
+    resolved_device = choose_device()
     model.to(resolved_device)
     model.eval()
 
