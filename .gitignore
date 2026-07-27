@@ -24,3 +24,5 @@ report/*.out
 report/*.toc
 report/*.bbl
 report/*.blg
+
+_report_smoke/

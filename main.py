@@ -29,6 +29,7 @@ from src.create_mri_dataset import DatasetCreationPlan, SplitMultiplicityConfig,
 from src.general_utils import BRAIN_PLANES, SCV_FILES, BRAIN_PLANE_KEYS_LOWER
 from src.k_space_utils import image_to_kspace, kspace_log_magnitude
 from src.metrices import calculate_psnr, calculate_ssim
+from src.evaluation.report_outputs import generate_all_evaluation_outputs
 
 def _save_training_history(history: dict[str, list[float]], output_path: Path) -> None:
 	output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +135,13 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> i
 	missing = _verify_required_files(required)
 	if missing:
 		raise FileNotFoundError(f"Result files were not created: {missing}")
+
+	generate_all_evaluation_outputs(
+		sample_metrics_csv=csv_path,
+		output_dir=model_config.result_dir / "report_outputs",
+		baseline_method="resunet",
+		proposed_method="resunet_data_consistency",
+	)
 
 	return len(test_dataset)
 
