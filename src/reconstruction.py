@@ -4,25 +4,24 @@ from scipy.interpolate import griddata
 
 def k_space_interpolation(
     k_space: np.ndarray,
+    zero_lines_indices: np.ndarray,
     method: str = 'linear_1d',
-    tolerance: float = 1e-5,
 ) -> tuple[np.ndarray, np.ndarray]:
     supported_methods = {'linear_1d', 'bilinear', 'bicubic', 'nearest_row'}
     if k_space.ndim != 2:
         raise ValueError('k_space must be 2D')
-    if tolerance < 0:
-        raise ValueError('tolerance must be non-negative')
     if method not in supported_methods:
         raise ValueError(
             "method must be one of: 'linear_1d', 'nearest_row', "
             "'bilinear', 'bicubic'"
         )
-
-
-    magnitude_image = np.abs(k_space)
-    sum_lines = np.sum(magnitude_image, axis=1)
-    zero_mask = sum_lines <= tolerance
-    zero_lines_indices = np.where(zero_mask)[0]
+    zero_lines_indices = np.asarray(zero_lines_indices, dtype=int)
+    if zero_lines_indices.ndim != 1:
+        raise ValueError('zero_lines_indices must be a 1D array')
+    if np.any(zero_lines_indices < 0) or np.any(zero_lines_indices >= k_space.shape[0]):
+        raise ValueError('zero_lines_indices contains out-of-range row indices')
+    zero_mask = np.zeros(k_space.shape[0], dtype=bool)
+    zero_mask[zero_lines_indices] = True
 
     corrected_k_space = k_space.copy()
     if zero_lines_indices.size == 0:
@@ -108,8 +107,8 @@ def k_space_interpolation(
 
 def interpolation_reconstruction(
     harmed_k_space: np.ndarray,
+    zero_lines_indices: np.ndarray,
     method: str = 'linear_1d',
-    tolerance: float = 1e-5,
 ) -> tuple[np.ndarray, np.ndarray]:
     if harmed_k_space.ndim != 2:
         raise ValueError('harmed_k_space must be 2D')
@@ -119,8 +118,8 @@ def interpolation_reconstruction(
 
     corrected_k_space, _ = k_space_interpolation(
         harmed_k_space,
+        zero_lines_indices=zero_lines_indices,
         method=method,
-        tolerance=tolerance,
     )
     lines_are_equal, number_of_non_zero_lines = verify_non_zero_lines(corrected_k_space, harmed_k_space)
     if not lines_are_equal:

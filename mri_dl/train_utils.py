@@ -2,11 +2,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import random
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+
+if TYPE_CHECKING:
+    from .experiment_config import ExperimentConfig
 
 
 @dataclass
@@ -76,7 +79,10 @@ def save_checkpoint(path: str | Path, model: nn.Module,
 
 def train_model(model: nn.Module, train_loader: DataLoader,
                 val_loader: DataLoader, train_config: TrainConfig,
-                model_kwargs: dict[str, Any]) -> dict[str, list[float]]:
+                model_kwargs: dict[str, Any],
+                experiment_config: 'ExperimentConfig | None' = None) -> dict[str, list[float]]:
+    if experiment_config is not None:
+        experiment_config.save()
     set_seed(train_config.seed)
     device = choose_device(train_config.device)
     model.to(device)
@@ -106,5 +112,6 @@ def load_checkpoint(checkpoint_path: str | Path, model_class: type[nn.Module],
     checkpoint = torch.load(checkpoint_path, map_location=resolved)
     model = model_class(**checkpoint.get('model_kwargs', {}))
     model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(resolved); model.eval()
+    model.to(resolved)
+    model.eval()
     return model, checkpoint

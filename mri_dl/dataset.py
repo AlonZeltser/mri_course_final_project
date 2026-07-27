@@ -62,6 +62,20 @@ class MRIUndersampledDataset(Dataset):
             'plane': str(row['plane']),
             'retain_ratio': torch.tensor(float(row['retain_ratio']), dtype=torch.float32),
         }
+        # Attach optional metadata columns when present for logging/reporting.
+        optional_string_columns = (
+            'subject_id',
+            'original_volume_path',
+            'resolved_volume_path',
+            'mask_id',
+            'mask_file',
+            'k_space_file',
+        )
+        for column_name in optional_string_columns:
+            if column_name in row.index and not pd.isna(row[column_name]):
+                sample[column_name] = str(row[column_name])
+        if 'slice_index' in row.index and not pd.isna(row['slice_index']):
+            sample['slice_index'] = int(row['slice_index'])
         if self.load_mask:
             mask = self._load_array(str(row['mask_file'])).astype(np.float32, copy=False)
             if mask.ndim != 1:

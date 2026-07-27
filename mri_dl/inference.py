@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 from .train_utils import choose_device
-from src.k_space_utils import enforce_kspace_data_consistency, infer_zero_line_mask
+from src.k_space_utils import enforce_kspace_data_consistency
 
 
 def predict_tensor(model: nn.Module, input_tensor: torch.Tensor,
@@ -67,19 +67,27 @@ def predict_numpy_with_data_consistency(
     model: nn.Module,
     image: np.ndarray,
     acquired_k_space: np.ndarray,
+    row_mask: np.ndarray,
     device: str | torch.device | None = None,
     clamp_to_unit_range: bool = True,
-    zero_line_atol: float = 0.0,
     return_debug: bool = False,
 ):
-    """Predict image then enforce row-wise k-space data consistency."""
+    """Predict image then enforce data consistency using a DB-provided row mask."""
+    if row_mask.ndim != 1:
+        raise ValueError(f'Expected row_mask to be 1D, got {row_mask.shape}')
+    if row_mask.shape[0] != acquired_k_space.shape[0]:
+        raise ValueError(
+            f'row_mask length ({row_mask.shape[0]}) must match k-space rows ({acquired_k_space.shape[0]}).'
+        )
+    if not np.all(np.isin(row_mask, (0, 1))):
+        raise ValueError('row_mask must contain only 0/1 values (0=zeroed, 1=retained).')
+
     reconstructed = predict_numpy(model, image, device=device)
-    zero_line_mask = infer_zero_line_mask(acquired_k_space, atol=zero_line_atol)
+    zero_line_mask = row_mask.astype(bool, copy=False) == 0
     final_image, cnn_k_space, merged_k_space = enforce_kspace_data_consistency(
         reconstructed_image=reconstructed,
         acquired_k_space=acquired_k_space,
         zero_line_mask=zero_line_mask,
-        atol=zero_line_atol,
     )
     if clamp_to_unit_range:
         final_image = final_image.clip(0.0, 1.0)
@@ -99,20 +107,21 @@ def predict_file_with_data_consistency(
     model: nn.Module,
     input_file: str | Path,
     k_space_file: str | Path,
+    mask_file: str | Path,
     output_file: str | Path | None = None,
     device: str | torch.device | None = None,
     clamp_to_unit_range: bool = True,
-    zero_line_atol: float = 0.0,
 ) -> np.ndarray:
     image = np.load(input_file, allow_pickle=False)
     acquired_k_space = np.load(k_space_file, allow_pickle=False)
+    row_mask = np.load(mask_file, allow_pickle=False)
     pred = predict_numpy_with_data_consistency(
         model=model,
         image=image,
         acquired_k_space=acquired_k_space,
+        row_mask=row_mask,
         device=device,
         clamp_to_unit_range=clamp_to_unit_range,
-        zero_line_atol=zero_line_atol,
     )
     if output_file is not None:
         output_file = Path(output_file)

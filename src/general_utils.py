@@ -19,7 +19,7 @@ def prepare_environment(hpc:bool):
     if hpc:
         data_path = 'MRI_2026_datasets/brain_age'
     else:
-        #set local relative path to the data set
+        #set here local relative path to the data set
         data_path = '../../../../../../../mri_dataset/brain_age'
 
     data_path = os.path.abspath(data_path)

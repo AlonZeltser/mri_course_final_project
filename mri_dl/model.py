@@ -64,15 +64,11 @@ class ResidualUNet(nn.Module):
     def visualize(
         self,
         sample_input_shape: tuple[int, int, int] = (1, 256, 256),
-        graphical: bool = True,
-        show: bool = False,
         save_path: str | Path | None = None,
     ) -> dict[str, object]:
         return visualize_model(
             self,
             sample_input_shape=sample_input_shape,
-            graphical=graphical,
-            show=show,
             save_path=save_path,
         )
 
@@ -80,8 +76,6 @@ class ResidualUNet(nn.Module):
 def visualize_model(
     model: nn.Module,
     sample_input_shape: tuple[int, int, int] = (1, 256, 256),
-    graphical: bool = True,
-    show: bool = False,
     save_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Dynamically visualize a model from an actual forward pass.
@@ -151,43 +145,7 @@ def visualize_model(
         print("=" * 80)
         for line in node_lines:
             print(line)
-
         rendered_path: Path | None = None
-        if graphical:
-            try:
-                import matplotlib.pyplot as plt
-                labels = []
-                for item in captured:
-                    label = f"{item['name']}\n{item['type']}\n{item['output']}"
-                    labels.append(label[:48])
-
-                if labels:
-                    fig_width = max(12, len(labels) * 2)
-                    fig, ax = plt.subplots(figsize=(fig_width, 4))
-                    ax.axis("off")
-                    ax.set_xlim(-0.75, len(labels) - 0.25)
-                    ax.set_ylim(-1.2, 1.2)
-                    for i, label in enumerate(labels):
-                        box = plt.Rectangle((i - 0.42, -0.35), 0.84, 0.7, facecolor="#e5e7eb", edgecolor="#374151", linewidth=1.2)
-                        ax.add_patch(box)
-                        ax.text(i, 0, label, ha="center", va="center", fontsize=8)
-                        if i < len(labels) - 1:
-                            ax.annotate("", xy=(i + 0.48, 0), xytext=(i + 0.42, 0), arrowprops=dict(arrowstyle="->", lw=1.2))
-
-                    output_base = Path(save_path) if save_path is not None else Path(__file__).with_name("residual_unet_traced_graph.png")
-                    if output_base.suffix.lower() != ".png":
-                        output_base = output_base.with_suffix(".png")
-                    fig.tight_layout()
-                    fig.savefig(output_base, dpi=180, bbox_inches="tight")
-                    if show:
-                        plt.show()
-                    plt.close(fig)
-                    rendered_path = output_base
-                    print(f"Saved graphical trace to: {rendered_path}")
-            except ImportError:
-                plt = None
-                print("Graphical visualization skipped: matplotlib is not available.")
-
         return {"trace": node_lines, "graph_path": rendered_path, "output_shape": tuple(output.shape) if isinstance(output, torch.Tensor) else type(output).__name__}
     finally:
         for hook in locals().get("hooks", []):
