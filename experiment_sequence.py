@@ -28,7 +28,7 @@ from mri_dl import (
 )
 from src.create_mri_dataset import DatasetCreationPlan, SplitMultiplicityConfig, create_dataset_split
 from src.general_utils import BRAIN_PLANES, SCV_FILES
-from src.k_space_utils import image_to_kspace, kspace_log_magnitude
+from src.k_space_utils import image_to_kspace
 from src.metrices import calculate_psnr, calculate_ssim
 from src.evaluation.report_outputs import generate_all_evaluation_outputs
 
@@ -36,10 +36,18 @@ def _save_training_history(history: dict[str, list[float]], output_path: Path) -
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	output_path.write_text(json.dumps(history, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-def _clear_previous_results(result_dir: Path) -> None:
+def _clear_previous_results(result_dir: Path, retain_model) -> None:
 	if result_dir.exists():
-		print(f"Removing old results at: {result_dir}")
-		shutil.rmtree(result_dir)
+		if retain_model:
+			for path in sorted(result_dir.rglob("*"), reverse=True):
+				if path.is_file():
+					if any(suffix.lower().startswith(".pt") for suffix in path.suffixes):
+						continue
+					path.unlink()
+			print(f"Preserving model files and clearing older results in: {result_dir}")
+		else:
+			print(f"Removing older results directory: {result_dir}")
+			shutil.rmtree(result_dir)
 
 def _verify_required_files(required_paths: dict[str, Path]) -> list[str]:
 	missing: list[str] = []
@@ -49,49 +57,101 @@ def _verify_required_files(required_paths: dict[str, Path]) -> list[str]:
 	return missing
 
 
-def _save_comparison_figure(dataset: MRIUndersampledDataset, model: ResidualUNet, output_path: Path) -> None:
-	sample = dataset[0]
-	undersampled = cast(Tensor, sample["input"])[0].numpy()
-	target = cast(Tensor, sample["target"])[0].numpy()
-	k_space_path = dataset.split_root / str(sample["k_space_file"])
-	mask_path = dataset.split_root / str(sample["mask_file"])
-	acquired_k_space = np.load(k_space_path, allow_pickle=False)
-	row_mask = np.load(mask_path, allow_pickle=False)
+def _select_distinct_volume_indices(dataset: MRIUndersampledDataset, max_items: int = 10) -> list[int]:
+	"""Pick up to max_items indices, preferring one sample per distinct volume."""
+	priority_columns = ("subject_id", "resolved_volume_path", "original_volume_path", "sample_id")
+	available_columns = [column for column in priority_columns if column in dataset.samples.columns]
+	selected: list[int] = []
+	seen_keys: set[str] = set()
+
+	for idx, row in dataset.samples.iterrows():
+		key_parts: list[str] = []
+		for column in available_columns:
+			value = row[column]
+			if value is None:
+				continue
+			if isinstance(value, float) and np.isnan(value):
+				continue
+			text = str(value).strip()
+			if text == "" or text.lower() == "nan":
+				continue
+			key_parts.append(text)
+		volume_key = "|".join(key_parts) if key_parts else str(row.get("sample_id", idx))
+		if volume_key in seen_keys:
+			continue
+		seen_keys.add(volume_key)
+		selected.append(int(idx))
+		if len(selected) >= max_items:
+			break
+
+	if selected:
+		return selected
+	return list(range(min(max_items, len(dataset))))
+
+
+def _save_comparison_figures(dataset: MRIUndersampledDataset, model: ResidualUNet, output_dir: Path, max_images: int = 10) -> list[Path]:
+	"""Save comparison figures for up to max_images from different volumes."""
+	output_dir.mkdir(parents=True, exist_ok=True)
 	device = choose_device()
+	selected_indices = _select_distinct_volume_indices(dataset, max_items=max_images)
+	saved_paths: list[Path] = []
 
-	resunet = predict_numpy(model, undersampled, device=device)
-	final_dc = predict_numpy_with_data_consistency(
-		model=model,
-		image=undersampled,
-		acquired_k_space=acquired_k_space,
-		row_mask=row_mask,
-		device=device,
-	)
+	for figure_index, sample_index in enumerate(selected_indices, start=1):
+		sample = dataset[sample_index]
+		undersampled = cast(Tensor, sample["input"])[0].numpy()
+		target = cast(Tensor, sample["target"])[0].numpy()
+		k_space_path = dataset.split_root / str(sample["k_space_file"])
+		mask_path = dataset.split_root / str(sample["mask_file"])
+		acquired_k_space = np.load(k_space_path, allow_pickle=False)
+		row_mask = np.load(mask_path, allow_pickle=False)
 
-	panels = [
-		("Target", target),
-		("Undersampled", undersampled),
-		("ResUNet", resunet),
-		("ResUNet + DC", final_dc),
-	]
-	fig, axes = plt.subplots(2, 4, figsize=(14, 7))
-	for idx, (title, image) in enumerate(panels):
-		if np.allclose(target, image):
-			psnr, ssim = float("inf"), 1.0
-		else:
-			psnr = calculate_psnr(target, image)
-			ssim = calculate_ssim(target, image)
-		axes[0, idx].imshow(image, cmap="gray")
-		axes[0, idx].set_title(f"{title}\nPSNR={psnr:.2f} SSIM={ssim:.3f}")
-		axes[0, idx].axis("off")
-		axes[1, idx].imshow(kspace_log_magnitude(image_to_kspace(image)), cmap="magma")
-		axes[1, idx].set_title(f"{title} k-space")
-		axes[1, idx].axis("off")
+		resunet = predict_numpy(model, undersampled, device=device)
+		final_dc = predict_numpy_with_data_consistency(
+			model=model,
+			image=undersampled,
+			acquired_k_space=acquired_k_space,
+			row_mask=row_mask,
+			device=device,
+		)
 
-	fig.tight_layout()
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-	fig.savefig(output_path, dpi=150)
-	plt.close(fig)
+		panels = [
+			("Target", target, np.abs(image_to_kspace(target))),
+			("Undersampled", undersampled, np.abs(acquired_k_space)),
+			("ResUNet", resunet, np.abs(image_to_kspace(resunet))),
+			("ResUNet + DC", final_dc, np.abs(image_to_kspace(final_dc))),
+		]
+		fig, axes = plt.subplots(2, 4, figsize=(14, 7))
+		for panel_index, (title, image, k_space_image) in enumerate(panels):
+			if np.allclose(target, image):
+				psnr, ssim = float("inf"), 1.0
+			else:
+				psnr = calculate_psnr(target, image)
+				ssim = calculate_ssim(target, image)
+			axes[0, panel_index].imshow(image, cmap="gray")
+			axes[0, panel_index].set_title(f"{title}\nPSNR={psnr:.2f} SSIM={ssim:.3f}")
+			axes[0, panel_index].axis("off")
+			axes[1, panel_index].imshow(k_space_image, cmap="magma")
+			axes[1, panel_index].set_title(f"{title} k-space")
+			axes[1, panel_index].axis("off")
+
+		subject = str(sample.get("subject_id", "unknown"))
+		plane = str(sample.get("plane", "unknown"))
+		slice_index = sample.get("slice_index", "unknown")
+		retain_ratio = float(cast(Tensor, sample["retain_ratio"]).item())
+		fig.suptitle(
+			f"volume={subject} | plane={plane} | slice={slice_index} | retain_ratio={retain_ratio:.2f}",
+			fontsize=12,
+		)
+		fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+		sample_id = str(sample.get("sample_id", f"sample_{sample_index:04d}"))
+		safe_sample_id = "".join(char if char.isalnum() or char in "-_" else "_" for char in sample_id)
+		output_path = output_dir / f"comparison_{figure_index:02d}_{safe_sample_id}.png"
+		fig.savefig(output_path, dpi=150)
+		plt.close(fig)
+		saved_paths.append(output_path)
+
+	return saved_paths
 
 
 
@@ -127,15 +187,17 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> i
 		raise
 
 	csv_path = model_config.test_results_path
-	figure_path = model_config.result_dir / "comparison_figure.png"
-	_save_comparison_figure(test_dataset, reloaded_model, figure_path)
+	figures_dir = model_config.result_dir / "comparison_figures"
+	saved_figure_paths = _save_comparison_figures(test_dataset, reloaded_model, figures_dir, max_images=10)
+	if not saved_figure_paths:
+		raise FileNotFoundError(f"No comparison figures were created in: {figures_dir}")
 
 	required = {
 		"checkpoint": model_config.checkpoint_path,
 		"training_history": model_config.history_path,
 		"config_used": model_config.result_dir / "config_used.json",
 		"test_per_image_csv": csv_path,
-		"comparison_figure": figure_path,
+		"comparison_figures_dir": figures_dir,
 	}
 	missing = _verify_required_files(required)
 	if missing:
@@ -255,13 +317,15 @@ def _run_sequence(params: dict) -> int:
 		for retain_ratio in params["retain_ratios"]:
 			print(f"\nExecuting undersampled experiment: plane={plane}, retain_ratio={retain_ratio}")
 			model_config = _create_model_config(params, plane, retain_ratio)
-			_clear_previous_results(model_config.result_dir)
+			_clear_previous_results(model_config.result_dir, params["skip_train"])
 			train_loader, val_loader, train_count, val_count = _create_train_data_loaders(params, model_config, dataset_plan)
 			status = "PASS"
 			test_count = 0
 			try:
-				_create_and_train_model(model_config, train_loader, val_loader)
-				test_count = _evaluate(model_config, dataset_plan)
+				if not params["skip_train"]:
+					_create_and_train_model(model_config, train_loader, val_loader)
+				if not params["skip_evaluation"]:
+					test_count = _evaluate(model_config, dataset_plan)
 			except Exception as exc:
 				status = f"FAIL: {exc}"
 				all_passed = False
@@ -273,7 +337,7 @@ def _run_sequence(params: dict) -> int:
 			print(f"  test samples  : {test_count}")
 			print(f"  checkpoint    : {model_config.checkpoint_path}")
 			print(f"  csv           : {model_config.test_results_path}")
-			print(f"  figure        : {model_config.result_dir / 'comparison_figure.png'}")
+			print(f"  figures dir   : {model_config.result_dir / 'comparison_figures'}")
 			print(f"  config        : {model_config.result_dir / 'config_used.json'}")
 			print(f"  result        : {status}")
 			print("=" * 60)
@@ -282,7 +346,7 @@ def _run_sequence(params: dict) -> int:
 
 def _create_parameters_for_mode(args) -> dict[str, object]:
 	cwd = Path(os.getcwd())
-	if args.mode == "full":
+	if args.mode == "main_experiment":
 		result = {
 			"mode": args.mode,
 			"selected_planes": BRAIN_PLANES,
@@ -333,12 +397,17 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 	else:
 		raise ValueError(f"Unknown mode: {args.mode}")
 	result["skip_split_creation"] = args.skip_split_creation
+	result["skip_train"] = args.skip_train
+	result["model_path"] = args.model_
 	return result
 
 def main() -> int:
 	parser = argparse.ArgumentParser(description="MRI reconstruction command line runner")
-	parser.add_argument("--mode", choices=("smoke", "full"), default="smoke", help="Run smoke test or full run.")
+	parser.add_argument("--mode", choices=("smoke", "main_experiment"), default="smoke", help="Run smoke test or the main experiment run.")
 	parser.add_argument("--skip_split_creation", action="store_true", help="Skip the creation of dataset splits.")
+	parser.add_argument("--skip_train", action="store_true", help="Skip the the train.")
+	parser.add_argument("--skip_evaluation", action="store_true", help="Skip the the evaluation on the test set.")
+	parser.add_argument("--model_path", help="Path to the model checkpoint. If none - use from default location")
 
 	args = parser.parse_args()
 
