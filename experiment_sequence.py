@@ -28,7 +28,7 @@ from mri_dl import (
 )
 from src.create_mri_dataset import DatasetCreationPlan, SplitMultiplicityConfig, create_dataset_split
 from src.general_utils import BRAIN_PLANES, SCV_FILES
-from src.k_space_utils import image_to_kspace
+from src.k_space_utils import image_to_kspace, kspace_log_magnitude
 from src.metrices import calculate_psnr, calculate_ssim
 from src.evaluation.report_outputs import generate_all_evaluation_outputs
 
@@ -115,10 +115,10 @@ def _save_comparison_figures(dataset: MRIUndersampledDataset, model: ResidualUNe
 		)
 
 		panels = [
-			("Target", target, np.abs(image_to_kspace(target))),
-			("Undersampled", undersampled, np.abs(acquired_k_space)),
-			("ResUNet", resunet, np.abs(image_to_kspace(resunet))),
-			("ResUNet + DC", final_dc, np.abs(image_to_kspace(final_dc))),
+			("Target", target, kspace_log_magnitude(image_to_kspace(target))),
+			("Undersampled", undersampled, kspace_log_magnitude(acquired_k_space)),
+			("ResUNet", resunet, kspace_log_magnitude(image_to_kspace(resunet))),
+			("ResUNet + DC", final_dc, kspace_log_magnitude(image_to_kspace(final_dc))),
 		]
 		fig, axes = plt.subplots(2, 4, figsize=(14, 7))
 		for panel_index, (title, image, k_space_image) in enumerate(panels):
