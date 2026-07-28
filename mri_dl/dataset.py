@@ -22,7 +22,7 @@ class MRIUndersampledDataset(Dataset):
         missing = required - set(self.samples.columns)
         if missing:
             raise ValueError(f'CSV is missing required columns: {sorted(missing)}')
-        self.samples = self.samples[self.samples['plane'] == plane]
+        self.samples = self.samples[self.samples['plane'].str.lower() == plane.lower()]
         keep = self.samples['retain_ratio'].apply(
             lambda x: np.isclose(float(x), float(retain_ratio), atol=1e-8))
         self.samples = self.samples[keep]

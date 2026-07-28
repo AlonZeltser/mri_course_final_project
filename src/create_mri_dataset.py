@@ -35,7 +35,6 @@ class DatasetCreationPlan:
     source_csv_names: Mapping[str, str]
     output_dataset_root: Path
     split_multiplicity: Mapping[str, SplitMultiplicityConfig]
-
     slice_percentile_range: tuple[float, float]
     planes: tuple[str, ...]
     retain_ratios: tuple[float, ...]
@@ -61,11 +60,11 @@ def validate_creation_plan(plan: DatasetCreationPlan) -> None:
     if plan.sigma_fraction <= 0:
         raise ValueError("sigma_fraction must be positive.")
 
-    unknown_planes = set(plan.planes) - set(BRAIN_PLANES)
+    unknown_planes = set(plan.planes) - set(BRAIN_PLANES.keys())
     if unknown_planes:
         raise ValueError(
             f"Unknown planes: {sorted(unknown_planes)}. "
-            f"Supported planes: {sorted(BRAIN_PLANES)}."
+            f"Supported planes: {sorted(BRAIN_PLANES.keys())}."
         )
 
     for ratio in plan.retain_ratios:

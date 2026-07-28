@@ -19,16 +19,15 @@ class ModelConfig:
     learning_rate: float
     random_seed: int
     num_workers: int
-    device: str | None
     data_consistency_enabled: bool
     per_image_csv_logging: bool
+    weight_decay: float
     data_root: Path = Path("..").joinpath("reconstruction_dataset")
     model_name: str = "ResidualUNet"
     base_channels: int = 16
     input_channels: int = 1
     output_channels: int = 1
     prediction_type: str = "residual"
-
     # Evaluation and output policy.
     psnr_data_range: str = "reference_min_max"
     ssim_data_range: str = "reference_min_max"
@@ -87,7 +86,7 @@ class ModelConfig:
             learning_rate=self.learning_rate,
             checkpoint_path=str(self.checkpoint_path),
             seed=self.random_seed,
-            device=self.device,
+            weight_decay=self.weight_decay
         )
 
     def validate(self, check_data_paths: bool = False) -> None:

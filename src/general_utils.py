@@ -7,11 +7,10 @@ SCV_FILES = {'train': 'student_train_metadata.csv',
 
 # this aligns with data, and assumes all data has the same internal dimensional ordering
 BRAIN_PLANES = {
-    'Sagittal':0,
-    'Coronal':1,
-    'Axial':2
+    'sagittal':0,
+    'coronal':1,
+    'axial':2
 }
-BRAIN_PLANE_KEYS_LOWER = (key.lower() for key in BRAIN_PLANES.keys())
 
 DL_SPLITS= ("train", "test", "val")
 
@@ -27,4 +26,3 @@ def prepare_environment(hpc:bool):
     data_path = os.path.abspath(data_path)
     print(f'Data path: {data_path}')
     os.chdir(data_path)
-

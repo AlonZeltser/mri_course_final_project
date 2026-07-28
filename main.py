@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from pprint import pprint
@@ -26,7 +27,7 @@ from mri_dl import (
 	train_model, choose_device,
 )
 from src.create_mri_dataset import DatasetCreationPlan, SplitMultiplicityConfig, create_dataset_split
-from src.general_utils import BRAIN_PLANES, SCV_FILES, BRAIN_PLANE_KEYS_LOWER
+from src.general_utils import BRAIN_PLANES, SCV_FILES
 from src.k_space_utils import image_to_kspace, kspace_log_magnitude
 from src.metrices import calculate_psnr, calculate_ssim
 from src.evaluation.report_outputs import generate_all_evaluation_outputs
@@ -35,6 +36,10 @@ def _save_training_history(history: dict[str, list[float]], output_path: Path) -
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	output_path.write_text(json.dumps(history, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+def _clear_previous_results(result_dir: Path) -> None:
+	if result_dir.exists():
+		print(f"Removing old results at: {result_dir}")
+		shutil.rmtree(result_dir)
 
 def _verify_required_files(required_paths: dict[str, Path]) -> list[str]:
 	missing: list[str] = []
@@ -200,10 +205,10 @@ def _create_model_config(params, plane, retain_ratio) -> ModelConfig:
 		retain_ratio=float(retain_ratio),
 		epochs=params["epochs"],
 		batch_size=32,
-		learning_rate=5e-4,
+		learning_rate=5e-5,
+		weight_decay=1e-4,
 		random_seed=42,
 		num_workers=0 if os.name == "nt" else 4,
-		device="cuda" if torch.cuda.is_available() else "cpu",
 		data_consistency_enabled=True,
 		per_image_csv_logging=True,
 		data_root=Path(str(params["dataset_split_root"])).resolve(),
@@ -250,6 +255,7 @@ def _run_sequence(params: dict) -> int:
 		for retain_ratio in params["retain_ratios"]:
 			print(f"\nExecuting undersampled experiment: plane={plane}, retain_ratio={retain_ratio}")
 			model_config = _create_model_config(params, plane, retain_ratio)
+			_clear_previous_results(model_config.result_dir)
 			train_loader, val_loader, train_count, val_count = _create_train_data_loaders(params, model_config, dataset_plan)
 			status = "PASS"
 			test_count = 0
@@ -279,52 +285,50 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 	if args.mode == "full":
 		result = {
 			"mode": args.mode,
-			"device": None,
-			"selected_planes": BRAIN_PLANE_KEYS_LOWER,
+			"selected_planes": BRAIN_PLANES,
 			"retain_ratios": RETAIN_RATIOS,
 			"dataset_split_root": (cwd / ".." / "undersampled_dataset_split").resolve(),
 			"results_root": (cwd / ".." / "undersampled_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
-				number_of_volumes=400,
+				number_of_volumes=600,
 				slices_per_volume_per_plane=4,
 				undersampling_per_slice = 3,
 			),
 			"val_set_size": SplitMultiplicityConfig(
-				number_of_volumes=40,
+				number_of_volumes=60,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice = 2
 			),
 			"test_set_size": SplitMultiplicityConfig(
-				number_of_volumes=100,
+				number_of_volumes=200,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice = 2
 			),
-			"epochs": 60,
+			"epochs": 80,
 		}
 	elif args.mode == "smoke":
 		result = {
 			"mode": args.mode,
-			"device": "cpu",
-			"selected_planes": ("Sagittal", "Coronal"),
-			"retain_ratios": (0.2,0.3),
+			"selected_planes": BRAIN_PLANES,
+			"retain_ratios": RETAIN_RATIOS,
 			"dataset_split_root": (cwd / ".." / "smoke_dataset_split").resolve(),
 			"results_root": (cwd / ".." / "smoke_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
-				number_of_volumes=2,
-				slices_per_volume_per_plane=2,
-				undersampling_per_slice=2,
+				number_of_volumes=8,
+				slices_per_volume_per_plane=4,
+				undersampling_per_slice=4,
 			),
 			"val_set_size": SplitMultiplicityConfig(
-				number_of_volumes=2,
+				number_of_volumes=4,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice=2
 			),
 			"test_set_size": SplitMultiplicityConfig(
-				number_of_volumes=2,
+				number_of_volumes=8,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice=2
 			),
-			"epochs": 2,
+			"epochs": 16,
 		}
 	else:
 		raise ValueError(f"Unknown mode: {args.mode}")

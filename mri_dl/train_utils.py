@@ -15,12 +15,12 @@ if TYPE_CHECKING:
 
 @dataclass
 class TrainConfig:
-    epochs: int = 20
-    learning_rate: float = 1e-3
-    weight_decay: float = 0.0
-    checkpoint_path: str = 'best_model.pt'
-    seed: int = 42
-    device: str | None = None
+    epochs: int
+    learning_rate: float
+    weight_decay: float
+    checkpoint_path: str
+    seed: int
+
 
 
 def choose_device() -> torch.device:
