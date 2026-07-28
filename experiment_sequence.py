@@ -378,9 +378,9 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 			"dataset_split_root": (cwd / ".." / "smoke_dataset_split").resolve(),
 			"results_root": (cwd / ".." / "smoke_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
-				number_of_volumes=8,
-				slices_per_volume_per_plane=4,
-				undersampling_per_slice=4,
+				number_of_volumes=4,
+				slices_per_volume_per_plane=2,
+				undersampling_per_slice=2,
 			),
 			"val_set_size": SplitMultiplicityConfig(
 				number_of_volumes=4,
@@ -392,13 +392,14 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice=2
 			),
-			"epochs": 16,
+			"epochs": 4,
 		}
 	else:
 		raise ValueError(f"Unknown mode: {args.mode}")
 	result["skip_split_creation"] = args.skip_split_creation
 	result["skip_train"] = args.skip_train
-	result["model_path"] = args.model_
+	result["skip_evaluation"] = args.skip_evaluation
+	result["model_path"] = args.model_path
 	return result
 
 def main() -> int:
