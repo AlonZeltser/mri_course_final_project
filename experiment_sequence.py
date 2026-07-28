@@ -379,21 +379,21 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 			"dataset_split_root": (cwd / ".." / "undersampled_dataset_split").resolve(),
 			"results_root": (cwd / ".." / "undersampled_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
-				number_of_volumes=600,
+				number_of_volumes=700,
 				slices_per_volume_per_plane=4,
 				undersampling_per_slice = 3,
 			),
 			"val_set_size": SplitMultiplicityConfig(
-				number_of_volumes=60,
+				number_of_volumes=70,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice = 2
 			),
 			"test_set_size": SplitMultiplicityConfig(
-				number_of_volumes=200,
+				number_of_volumes=300,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice = 2
 			),
-			"epochs": 80,
+			"epochs": 100,
 		}
 	elif args.mode == "smoke":
 		result = {
