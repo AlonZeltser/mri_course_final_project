@@ -57,6 +57,29 @@ def _verify_required_files(required_paths: dict[str, Path]) -> list[str]:
 	return missing
 
 
+def _resolve_evaluation_checkpoint_path(model_config: ModelConfig, model_path_root: str | Path | None) -> Path:
+	"""Resolve the checkpoint to load for evaluation.
+
+	If model_path_root is provided, expect the tree:
+	<model_path_root>/<plane>/retain_<xx>/best_model.pt
+	Otherwise use the experiment's own checkpoint.
+	"""
+	if model_path_root is None:
+		return model_config.checkpoint_path
+
+	model_path_text = str(model_path_root).strip()
+	if model_path_text == "":
+		return model_config.checkpoint_path
+
+	root = Path(model_path_text).expanduser().resolve()
+	checkpoint_path = root / model_config.experiment_relative_path / "best_model.pt"
+	if not checkpoint_path.exists():
+		raise FileNotFoundError(
+			f"External evaluation checkpoint not found: {checkpoint_path}"
+		)
+	return checkpoint_path
+
+
 def _select_distinct_volume_indices(dataset: MRIUndersampledDataset, max_items: int = 10) -> list[int]:
 	"""Pick up to max_items indices, preferring one sample per distinct volume."""
 	priority_columns = ("subject_id", "resolved_volume_path", "original_volume_path", "sample_id")
@@ -155,7 +178,7 @@ def _save_comparison_figures(dataset: MRIUndersampledDataset, model: ResidualUNe
 
 
 
-def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> int:
+def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan, model_path_root: str | Path | None = None) -> int:
 	"""Evaluate test split; return number of test samples."""
 	print("Evaluate sequence start")
 	print("loading test data sequence")
@@ -166,11 +189,13 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> i
 		retain_ratio=model_config.retain_ratio,
 		load_mask=True)
 	test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=0)
+	checkpoint_path = _resolve_evaluation_checkpoint_path(model_config, model_path_root)
+	print(f"Loading evaluation model from: {checkpoint_path}")
 	print("Evaluating model...")
 	try:
-		reloaded_model, checkpoint = load_checkpoint(model_config.checkpoint_path, ResidualUNet)
+		reloaded_model, checkpoint = load_checkpoint(checkpoint_path, ResidualUNet)
 	except Exception as exc:
-		raise RuntimeError(f"Checkpoint loading failed for {model_config.checkpoint_path}: {exc}") from exc
+		raise RuntimeError(f"Checkpoint loading failed for {checkpoint_path}: {exc}") from exc
 	try:
 		_ = evaluate_and_save_results(
 			model=reloaded_model,
@@ -193,7 +218,7 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> i
 		raise FileNotFoundError(f"No comparison figures were created in: {figures_dir}")
 
 	required = {
-		"checkpoint": model_config.checkpoint_path,
+		"checkpoint": checkpoint_path,
 		"training_history": model_config.history_path,
 		"config_used": model_config.result_dir / "config_used.json",
 		"test_per_image_csv": csv_path,
@@ -325,7 +350,7 @@ def _run_sequence(params: dict) -> int:
 				if not params["skip_train"]:
 					_create_and_train_model(model_config, train_loader, val_loader)
 				if not params["skip_evaluation"]:
-					test_count = _evaluate(model_config, dataset_plan)
+								test_count = _evaluate(model_config, dataset_plan, model_path_root=params.get("model_path"))
 			except Exception as exc:
 				status = f"FAIL: {exc}"
 				all_passed = False
