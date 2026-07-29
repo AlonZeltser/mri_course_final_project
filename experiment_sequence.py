@@ -379,12 +379,12 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 			"dataset_split_root": (cwd / ".." / "undersampled_dataset_split").resolve(),
 			"results_root": (cwd / ".." / "undersampled_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
-				number_of_volumes=700,
+				number_of_volumes=800,
 				slices_per_volume_per_plane=4,
 				undersampling_per_slice = 3,
 			),
 			"val_set_size": SplitMultiplicityConfig(
-				number_of_volumes=70,
+				number_of_volumes=80,
 				slices_per_volume_per_plane=2,
 				undersampling_per_slice = 2
 			),
