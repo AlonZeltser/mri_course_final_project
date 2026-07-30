@@ -378,6 +378,17 @@ def _filter_planes(sample_metrics: pd.DataFrame, plane_filter: Sequence[str] | N
     if filtered.empty:
         raise ValueError(f"No samples remain after filtering by plane(s): {sorted(desired)}")
     return filtered
+
+
+def _aggregate_filename_tokens(sample_metrics: pd.DataFrame) -> tuple[str, str]:
+    planes = sorted(sample_metrics["plane"].dropna().astype(str).unique().tolist())
+    plane_token = planes[0] if len(planes) == 1 else "all_planes"
+    ratios = sorted(float(x) for x in sample_metrics["sampling_ratio"].dropna().unique())
+    if len(ratios) == 1:
+        retain_token = str(int(round(ratios[0] * 100)))
+    else:
+        retain_token = "mixed"
+    return plane_token, retain_token
 def _generate_scope_outputs(
     sample_metrics: pd.DataFrame,
     scope_name: str,
@@ -386,16 +397,10 @@ def _generate_scope_outputs(
     proposed_method: str,
     figure_formats: Sequence[str],
     metric_names: Sequence[str] | None,
+    include_metric_figures: bool = True,
 ) -> dict[str, list[Path]]:
     outputs: dict[str, list[Path]] = {}
-    aggregated = aggregate_metrics(sample_metrics, ["method", "plane", "sampling_ratio"], metric_names=metric_names)
     pooled = aggregate_metrics(sample_metrics, ["method", "sampling_ratio"], metric_names=metric_names)
-    aggregate_csv = output_dir / f"aggregate_metrics_{scope_name}.csv"
-    pooled_csv = output_dir / f"aggregate_metrics_all_planes_{scope_name}.csv"
-    aggregated.to_csv(aggregate_csv, index=False)
-    pooled.to_csv(pooled_csv, index=False)
-    outputs["aggregate_metrics"] = [aggregate_csv]
-    outputs["aggregate_metrics_all_planes"] = [pooled_csv]
     report_table = build_report_table(pooled)
     report_csv = output_dir / f"report_metrics_table_{scope_name}.csv"
     report_tex = output_dir / f"report_metrics_table_{scope_name}.tex"
@@ -406,33 +411,34 @@ def _generate_scope_outputs(
     outputs["report_metrics_table_csv"] = [report_csv]
     outputs["report_metrics_table_tex"] = [report_tex]
     outputs["report_metrics_table_md"] = [report_md]
-    for metric in ("psnr", "ssim"):
-        base = output_dir / f"{metric}_vs_ratio_{scope_name}"
-        outputs[f"{metric}_vs_ratio"] = plot_metric_vs_ratio(
-            pooled,
-            metric,
-            base,
-            baseline_method=baseline_method,
-            proposed_method=proposed_method,
-            formats=figure_formats,
-            title_suffix=scope_name.replace("_", " "),
-        )
-    for metric in ("psnr", "ssim"):
-        base = output_dir / f"{metric}_scatter_{scope_name}"
-        paths, corr = plot_baseline_vs_proposed_scatter(
-            sample_metrics,
-            metric,
-            base,
-            baseline_method=baseline_method,
-            proposed_method=proposed_method,
-            formats=figure_formats,
-            title_suffix=scope_name.replace("_", " "),
-        )
-        outputs[f"{metric}_scatter"] = paths
-        (output_dir / f"{metric}_scatter_{scope_name}_pearson.json").write_text(
-            json.dumps(corr, indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
+    if include_metric_figures:
+        for metric in ("psnr", "ssim"):
+            base = output_dir / f"{metric}_vs_ratio_{scope_name}"
+            outputs[f"{metric}_vs_ratio"] = plot_metric_vs_ratio(
+                pooled,
+                metric,
+                base,
+                baseline_method=baseline_method,
+                proposed_method=proposed_method,
+                formats=figure_formats,
+                title_suffix=scope_name.replace("_", " "),
+            )
+        for metric in ("psnr", "ssim"):
+            base = output_dir / f"{metric}_scatter_{scope_name}"
+            paths, corr = plot_baseline_vs_proposed_scatter(
+                sample_metrics,
+                metric,
+                base,
+                baseline_method=baseline_method,
+                proposed_method=proposed_method,
+                formats=figure_formats,
+                title_suffix=scope_name.replace("_", " "),
+            )
+            outputs[f"{metric}_scatter"] = paths
+            (output_dir / f"{metric}_scatter_{scope_name}_pearson.json").write_text(
+                json.dumps(corr, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
     return outputs
 def generate_all_evaluation_outputs(
     sample_metrics_csv: str | Path | pd.DataFrame,
@@ -460,6 +466,11 @@ def generate_all_evaluation_outputs(
     }
     (out_dir / "report_summary.json").write_text(json.dumps(report_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     outputs: dict[str, Path] = {"test_sample_metrics_csv": canonical_csv}
+    aggregate_df = aggregate_metrics(sample_metrics, ["method", "plane", "sampling_ratio"], metric_names=metric_names)
+    plane_token, retain_token = _aggregate_filename_tokens(sample_metrics)
+    aggregate_csv = out_dir / f"aggregate_metrics_{plane_token}_{retain_token}.csv"
+    aggregate_df.to_csv(aggregate_csv, index=False)
+    outputs["aggregate_metrics"] = aggregate_csv
     scopes = ["all_planes"] + [plane for plane in PLANE_ORDER if plane in report_summary["planes"]]
     for scope in scopes:
         scope_df = sample_metrics if scope == "all_planes" else sample_metrics[sample_metrics["plane"].astype(str) == scope].copy()
@@ -474,6 +485,7 @@ def generate_all_evaluation_outputs(
             proposed_method=proposed_method,
             figure_formats=figure_formats,
             metric_names=metric_names,
+            include_metric_figures=(scope != "all_planes"),
         )
         for key, paths in scope_outputs.items():
             # Keep the first path in the returned summary; the file naming on disk is explicit.

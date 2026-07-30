@@ -32,8 +32,12 @@ Entry point: `experiment_sequence.py`
 
 ### Required parameters
 
-- `--source_data_root`: existing source dataset root (read-only input).
-- `--destination_root`: output parent directory (created if missing).
+- `--source_data_root`: existing source dataset root (read-only input). The folder must be equivalent to the `brain_age`
+folder in the course data set: it must contain the files `student_train_metadata.csv` and `student_val_metadata.csv` 
+(test csv is not required as the volumes were not given) that describe the existing volume pool, and a subfolder `selected_npy`
+which in turns contain all the volumes in `.npy` format.
+- `--destination_root`: output parent directory (created if missing) that will hold both the rearranged data set and 
+the results. Must be located outside the given dataset and the call must have permission to write. 
 
 The app writes generated dataset splits and results under `--destination_root`.
 
@@ -76,6 +80,3 @@ jupyter notebook
 
 Then open `notebooks/04_small_baseline_assessment.ipynb` and run cells top-to-bottom.
 
-## GitHub opening document
-
-Yes. If `README.md` is in the repository root, GitHub automatically renders it on the repo main page.
