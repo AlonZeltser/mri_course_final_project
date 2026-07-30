@@ -32,7 +32,7 @@ from src.create_mri_dataset import DatasetCreationPlan, SplitMultiplicityConfig,
 from src.general_utils import BRAIN_PLANES, SCV_FILES
 from src.k_space_utils import image_to_kspace, kspace_log_magnitude
 from src.metrices import calculate_psnr, calculate_ssim
-from src.evaluation.report_outputs import METHOD_ORDER, generate_all_evaluation_outputs, plot_metric_vs_ratio
+from src.evaluation.report_outputs import METHOD_ORDER, generate_all_evaluation_outputs
 
 
 def _combine_group_mean_std(group: pd.DataFrame, metric_name: str) -> tuple[float, float]:
