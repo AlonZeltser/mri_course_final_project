@@ -57,6 +57,27 @@ def _verify_required_files(required_paths: dict[str, Path]) -> list[str]:
 	return missing
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+	"""Compatibility helper for Path.is_relative_to across Python versions."""
+	try:
+		path.relative_to(parent)
+		return True
+	except ValueError:
+		return False
+
+
+def _validate_io_roots(source_root: Path, destination_root: Path) -> None:
+	"""Ensure source exists and outputs do not write under the source dataset path."""
+	if not source_root.exists() or not source_root.is_dir():
+		raise FileNotFoundError(f"Source dataset root does not exist or is not a directory: {source_root}")
+
+	# Any outputs are created under destination_root; prevent writing into source tree.
+	if destination_root == source_root or _is_relative_to(destination_root, source_root):
+		raise ValueError(
+			"Destination root must be outside the source dataset root to avoid writing into source data. "
+			f"source={source_root}, destination={destination_root}"
+		)
+
 def _resolve_evaluation_checkpoint_path(model_config: ModelConfig, model_path_root: str | Path | None) -> Path:
 	"""Resolve the checkpoint to load for evaluation.
 
@@ -309,7 +330,7 @@ def _create_model_config(params, plane, retain_ratio) -> ModelConfig:
 
 def _create_undersampled_data_set(params:dict) -> DatasetCreationPlan:
 	data_creation_plan = DatasetCreationPlan(
-		source_dataset_root=Path(os.getcwd()),
+		source_dataset_root=Path(str(params["source_dataset_root"])).resolve(),
 		source_csv_names=SCV_FILES,
 		output_dataset_root=params["dataset_split_root"],
 		split_multiplicity={
@@ -370,14 +391,20 @@ def _run_sequence(params: dict) -> int:
 	return 0 if all_passed else 1
 
 def _create_parameters_for_mode(args) -> dict[str, object]:
-	cwd = Path(os.getcwd())
+	source_root = Path(str(args.source_data_root)).expanduser().resolve()
+	destination_root = Path(str(args.destination_root)).expanduser().resolve()
+	_validate_io_roots(source_root, destination_root)
+	destination_root.mkdir(parents=True, exist_ok=True)
+
 	if args.mode == "main_experiment":
 		result = {
 			"mode": args.mode,
+			"source_dataset_root": source_root,
+			"destination_root": destination_root,
 			"selected_planes": BRAIN_PLANES,
 			"retain_ratios": RETAIN_RATIOS,
-			"dataset_split_root": (cwd / ".." / "undersampled_dataset_split").resolve(),
-			"results_root": (cwd / ".." / "undersampled_results").resolve(),
+			"dataset_split_root": (destination_root / "undersampled_dataset_split").resolve(),
+			"results_root": (destination_root / "undersampled_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
 				number_of_volumes=800,
 				slices_per_volume_per_plane=4,
@@ -398,10 +425,12 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 	elif args.mode == "smoke":
 		result = {
 			"mode": args.mode,
+			"source_dataset_root": source_root,
+			"destination_root": destination_root,
 			"selected_planes": BRAIN_PLANES,
 			"retain_ratios": RETAIN_RATIOS,
-			"dataset_split_root": (cwd / ".." / "smoke_dataset_split").resolve(),
-			"results_root": (cwd / ".." / "smoke_results").resolve(),
+			"dataset_split_root": (destination_root / "smoke_dataset_split").resolve(),
+			"results_root": (destination_root / "smoke_results").resolve(),
 			"train_set_size": SplitMultiplicityConfig(
 				number_of_volumes=4,
 				slices_per_volume_per_plane=2,
@@ -430,6 +459,8 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 def main() -> int:
 	parser = argparse.ArgumentParser(description="MRI reconstruction command line runner")
 	parser.add_argument("--mode", choices=("smoke", "main_experiment"), default="smoke", help="Run smoke test or the main experiment run.")
+	parser.add_argument("--source_data_root", required=True, help="Existing source dataset root. Used only for reading.")
+	parser.add_argument("--destination_root", required=True, help="Destination parent root for generated dataset splits and results.")
 	parser.add_argument("--skip_split_creation", action="store_true", help="Skip the creation of dataset splits.")
 	parser.add_argument("--skip_train", action="store_true", help="Skip the the train.")
 	parser.add_argument("--skip_evaluation", action="store_true", help="Skip the the evaluation on the test set.")
