@@ -4,10 +4,12 @@ import argparse
 import json
 import os
 import shutil
+import time
+from datetime import datetime
 from dataclasses import asdict
 from pathlib import Path
 from pprint import pprint
-from typing import cast
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,6 +35,21 @@ from src.general_utils import BRAIN_PLANES, SCV_FILES
 from src.k_space_utils import image_to_kspace, kspace_log_magnitude
 from src.metrices import calculate_psnr, calculate_ssim
 from src.evaluation.report_outputs import METHOD_ORDER, generate_all_evaluation_outputs
+
+
+def _format_duration(seconds: float) -> str:
+	seconds = max(0.0, float(seconds))
+	hours, remainder = divmod(seconds, 3600.0)
+	minutes, secs = divmod(remainder, 60.0)
+	if hours >= 1:
+		return f"{int(hours)}h {int(minutes)}m {secs:05.2f}s"
+	if minutes >= 1:
+		return f"{int(minutes)}m {secs:05.2f}s"
+	return f"{secs:.2f}s"
+
+
+def _read_csv_frame(path: Path) -> pd.DataFrame:
+	return cast(pd.DataFrame, cast(Any, pd.read_csv)(str(path)))
 
 
 def _combine_group_mean_std(group: pd.DataFrame, metric_name: str) -> tuple[float, float]:
@@ -75,8 +92,8 @@ def _aggregate_all_planes_metrics(results_root: Path, selected_planes: list[str]
 	if not existing_paths:
 		print("Warning: no per-run aggregate CSV files found; skipping all-planes aggregation.")
 		return None
-	frames = [cast(pd.DataFrame, pd.read_csv(str(path), iterator=False, chunksize=None)) for path in existing_paths]
-	combined = cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+	frames = [_read_csv_frame(path) for path in existing_paths]
+	combined = pd.concat(frames, ignore_index=True)
 	required_cols = {"method", "sampling_ratio", "count", "psnr_mean", "psnr_std", "ssim_mean", "ssim_std"}
 	missing_cols = required_cols - set(combined.columns)
 	if missing_cols:
@@ -113,7 +130,7 @@ def _create_root_ratio_plots(results_root: Path, aggregated_csv_path: Path | Non
 		print("Warning: no aggregated all-planes CSV found; skipping ratio plots.")
 		return []
 
-	aggregated = pd.read_csv(aggregated_csv_path)
+	aggregated = _read_csv_frame(aggregated_csv_path)
 	required_cols = {"method", "sampling_ratio", "psnr_mean", "psnr_std", "ssim_mean", "ssim_std"}
 	missing_cols = required_cols - set(aggregated.columns)
 	if missing_cols:
@@ -201,7 +218,7 @@ def _create_root_psnr_scatter(results_root: Path, selected_planes: list[str], re
 		print("Warning: no per-image test CSV files found; skipping root scatter plot.")
 		return None
 
-	frames = [pd.read_csv(path) for path in existing_paths]
+	frames = [_read_csv_frame(path) for path in existing_paths]
 	combined = pd.concat(frames, ignore_index=True)
 	required_cols = {"retain_ratio", "psnr_undersampled", "psnr_resunet_dc"}
 	missing_cols = required_cols - set(combined.columns)
@@ -292,8 +309,8 @@ def _create_root_ssim_scatter(results_root: Path, selected_planes: list[str], re
 		print("Warning: no per-image test CSV files found; skipping root scatter plot.")
 		return None
 
-	frames = [cast(pd.DataFrame, pd.read_csv(str(path), iterator=False, chunksize=None)) for path in existing_paths]
-	combined = cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+	frames = [_read_csv_frame(path) for path in existing_paths]
+	combined = pd.concat(frames, ignore_index=True)
 	required_cols = {"retain_ratio", "ssim_undersampled", "ssim_resunet_dc"}
 	missing_cols = required_cols - set(combined.columns)
 	if missing_cols:
@@ -593,6 +610,9 @@ def _save_comparison_figures(
 
 def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan, model_path_root: str | Path | None = None) -> int:
 	"""Evaluate test split; return number of test samples."""
+	phase_start = time.perf_counter()
+	phase_started_at = datetime.now()
+	print(f"[{phase_started_at:%Y-%m-%d %H:%M:%S}] Evaluation phase started")
 	print("Evaluate sequence start")
 	print("loading test data sequence")
 	test_dataset = MRIUndersampledDataset(
@@ -605,6 +625,7 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan, mode
 	checkpoint_path = _resolve_evaluation_checkpoint_path(model_config, model_path_root)
 	print(f"Loading evaluation model from: {checkpoint_path}")
 	print("Evaluating model...")
+	evaluation_start = time.perf_counter()
 	try:
 		reloaded_model, checkpoint = load_checkpoint(checkpoint_path, ResidualUNet)
 	except Exception as exc:
@@ -623,6 +644,11 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan, mode
 		if "Shape mismatch" in str(exc):
 			raise ValueError(f"Tensor shapes do not match during evaluation: {exc}") from exc
 		raise
+	evaluation_finished_at = datetime.now()
+	print(
+		f"[{evaluation_finished_at:%Y-%m-%d %H:%M:%S}] Evaluation inference and per-image metrics finished in "
+		f"{_format_duration(time.perf_counter() - evaluation_start)}"
+	)
 
 	csv_path = model_config.test_results_path
 	figures_dir = model_config.result_dir / "comparison_figures"
@@ -649,16 +675,32 @@ def _evaluate(model_config: ModelConfig, dataset_plan: DatasetCreationPlan, mode
 	if missing:
 		raise FileNotFoundError(f"Result files were not created: {missing}")
 
+	report_start = time.perf_counter()
+	report_started_at = datetime.now()
+	print(f"[{report_started_at:%Y-%m-%d %H:%M:%S}] Evaluation results generation started")
 	generate_all_evaluation_outputs(
 		sample_metrics_csv=csv_path,
 		output_dir=model_config.result_dir / "report_outputs",
 		baseline_method="resunet",
 		proposed_method="resunet_data_consistency",
 	)
+	report_finished_at = datetime.now()
+	print(
+		f"[{report_finished_at:%Y-%m-%d %H:%M:%S}] Evaluation results generation finished in "
+		f"{_format_duration(time.perf_counter() - report_start)}"
+	)
+	phase_finished_at = datetime.now()
+	print(
+		f"[{phase_finished_at:%Y-%m-%d %H:%M:%S}] Evaluation phase finished in "
+		f"{_format_duration(time.perf_counter() - phase_start)}"
+	)
 
 	return len(test_dataset)
 
 def _create_and_train_model(model_config: ModelConfig, train_loader: DataLoader, val_loader: DataLoader) -> None:
+	phase_start = time.perf_counter()
+	phase_started_at = datetime.now()
+	print(f"[{phase_started_at:%Y-%m-%d %H:%M:%S}] Training phase started")
 	model_config.save()  # persist config_used.json before training starts
 	model_kwargs = model_config.model_kwargs
 	model = ResidualUNet(**model_kwargs)
@@ -674,6 +716,11 @@ def _create_and_train_model(model_config: ModelConfig, train_loader: DataLoader,
 	if not model_config.checkpoint_path.exists():
 		raise FileNotFoundError(f"Checkpoint saving failed, file not found: {model_config.checkpoint_path}")
 	_save_training_history(history, model_config.history_path)
+	phase_finished_at = datetime.now()
+	print(
+		f"[{phase_finished_at:%Y-%m-%d %H:%M:%S}] Training phase finished in "
+		f"{_format_duration(time.perf_counter() - phase_start)}"
+	)
 
 def _create_train_data_loaders(params: dict, model_config: ModelConfig, dataset_plan: DatasetCreationPlan) -> tuple[DataLoader, DataLoader, int, int]:
 	"""Return (train_loader, val_loader, train_count, val_count)."""
@@ -729,6 +776,9 @@ def _create_model_config(params, plane, retain_ratio) -> ModelConfig:
 	return result
 
 def _create_undersampled_data_set(params:dict) -> DatasetCreationPlan:
+	phase_start = time.perf_counter()
+	phase_started_at = datetime.now()
+	print(f"[{phase_started_at:%Y-%m-%d %H:%M:%S}] Dataset split phase started")
 	data_creation_plan = DatasetCreationPlan(
 		source_dataset_root=Path(str(params["source_dataset_root"])).resolve(),
 		source_csv_names=SCV_FILES,
@@ -744,19 +794,30 @@ def _create_undersampled_data_set(params:dict) -> DatasetCreationPlan:
 		first_seed=1234,
 		sigma_fraction=1 / 6,
 	)
+	created_split = False
 	if params["skip_split_creation"]:
 		print("Skip splitting creation")
-		return data_creation_plan
-	print("Creating undersampled data set:")
-	print("===============================")
-	pprint(asdict(data_creation_plan))
-	print("===============================")
-	create_dataset_split(data_creation_plan)
-	print(f"Data set created at: {data_creation_plan.output_dataset_root}")
+	else:
+		print("Creating undersampled data set:")
+		print("===============================")
+		pprint(asdict(data_creation_plan))
+		print("===============================")
+		create_dataset_split(data_creation_plan)
+		created_split = True
+		print(f"Data set created at: {data_creation_plan.output_dataset_root}")
+	phase_finished_at = datetime.now()
+	phase_duration = _format_duration(time.perf_counter() - phase_start)
+	if created_split:
+		print(f"[{phase_finished_at:%Y-%m-%d %H:%M:%S}] Dataset split phase finished in {phase_duration}")
+	else:
+		print(f"[{phase_finished_at:%Y-%m-%d %H:%M:%S}] Dataset split phase skipped in {phase_duration}")
 	return data_creation_plan
 
 
 def _run_sequence(params: dict) -> int:
+	sequence_start = time.perf_counter()
+	sequence_started_at = datetime.now()
+	print(f"[{sequence_started_at:%Y-%m-%d %H:%M:%S}] Experiment sequence started")
 	dataset_plan = _create_undersampled_data_set(params)
 	all_passed = True
 	for plane in params["selected_planes"]:
@@ -771,7 +832,7 @@ def _run_sequence(params: dict) -> int:
 				if not params["skip_train"]:
 					_create_and_train_model(model_config, train_loader, val_loader)
 				if not params["skip_evaluation"]:
-								test_count = _evaluate(model_config, dataset_plan, model_path_root=params.get("model_path"))
+						test_count = _evaluate(model_config, dataset_plan, model_path_root=params.get("model_path"))
 			except Exception as exc:
 				status = f"FAIL: {exc}"
 				all_passed = False
@@ -795,6 +856,11 @@ def _run_sequence(params: dict) -> int:
 	_create_root_ratio_plots(results_root, aggregated_csv_path)
 	_create_root_psnr_scatter(results_root, selected_planes, retain_ratios)
 	_create_root_ssim_scatter(results_root, selected_planes, retain_ratios)
+	sequence_finished_at = datetime.now()
+	print(
+		f"[{sequence_finished_at:%Y-%m-%d %H:%M:%S}] Experiment sequence finished in "
+		f"{_format_duration(time.perf_counter() - sequence_start)}"
+	)
 
 	return 0 if all_passed else 1
 
@@ -865,6 +931,9 @@ def _create_parameters_for_mode(args) -> dict[str, object]:
 	return result
 
 def main() -> int:
+	app_start = time.perf_counter()
+	app_started_at = datetime.now()
+	print(f"[{app_started_at:%Y-%m-%d %H:%M:%S}] Experiment app started")
 	parser = argparse.ArgumentParser(description="MRI reconstruction command line runner")
 	parser.add_argument("--mode", choices=("smoke", "main_experiment"), default="smoke", help="Run smoke test or the main experiment run.")
 	parser.add_argument("--source_data_root", required=True, help="Existing source dataset root. Used only for reading.")
@@ -882,7 +951,14 @@ def main() -> int:
 	pprint(params)
 	print("===============================")
 
-	return _run_sequence(params)
+	try:
+		return _run_sequence(params)
+	finally:
+		app_finished_at = datetime.now()
+		print(
+			f"[{app_finished_at:%Y-%m-%d %H:%M:%S}] Experiment app finished in "
+			f"{_format_duration(time.perf_counter() - app_start)}"
+		)
 
 
 if __name__ == "__main__":
