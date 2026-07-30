@@ -41,6 +41,8 @@ the results. Must be located outside the given dataset and the call must have pe
 
 The app writes generated dataset splits and results under `--destination_root`.
 
+#### The main application requires quota of at least 12GB for the rearranged dataset and for the results.
+
 ### Quick run (smoke)
 
 ```powershell
