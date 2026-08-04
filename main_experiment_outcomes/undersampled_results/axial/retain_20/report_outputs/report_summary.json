@@ -1,0 +1,12 @@
+{
+  "canonical_csv": "C:\\mri_dataset\\undersampled_results\\axial\\retain_20\\report_outputs\\test_sample_metrics.csv",
+  "methods": [
+    "resunet",
+    "resunet_data_consistency",
+    "zero_filled"
+  ],
+  "n_rows": 3600,
+  "planes": [
+    "axial"
+  ]
+}
